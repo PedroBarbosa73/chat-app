@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Local Chat - Rooms</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
@@ -14,24 +15,41 @@
             fetch(`/messages?room_id=${currentRoomId}`)
                 .then(response => response.json())
                 .then(messages => {
+                    if (messages.error) {
+                        // Handle unauthorized access
+                        document.getElementById('message-list').innerHTML = `
+                            <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
+                                You are not authorized to view this room's messages.
+                            </div>
+                        `;
+                        document.getElementById('message-form').style.display = 'none';
+                        return;
+                    }
+
                     const messageList = document.getElementById('message-list');
                     messageList.innerHTML = '';
                     messages.forEach(msg => {
-                        messageList.innerHTML += `
-                            <div class="bg-white p-4 rounded-lg shadow mb-4">
-                                <div class="flex items-center mb-2">
-                                    <span class="font-semibold text-blue-600">${msg.username}</span>
-                                    <span class="text-xs text-gray-500 ml-2">${new Date(msg.created_at).toLocaleString()}</span>
-                                </div>
-                                <p class="text-gray-800 whitespace-pre-wrap">${msg.content}</p>
-                                <p class="text-xs text-gray-500 mt-2">Message ID: ${msg.message_id}</p>
+                        const messageDiv = document.createElement('div');
+                        messageDiv.className = 'bg-white p-4 rounded-lg shadow mb-4';
+                        messageDiv.innerHTML = `
+                            <div class="flex items-center mb-2">
+                                <span class="font-semibold text-blue-600">${msg.username}</span>
+                                <span class="text-xs text-gray-500 ml-2">${new Date(msg.created_at).toLocaleString()}</span>
                             </div>
+                            <p class="text-gray-800 whitespace-pre-wrap">${msg.content}</p>
+                            <p class="text-xs text-gray-500 mt-2">Message ID: ${msg.message_id}</p>
                         `;
+                        messageList.appendChild(messageDiv);
                     });
                 });
         }
 
-        function selectRoom(roomId) {
+        function selectRoom(roomId, isPrivate) {
+            if (isPrivate && !isRoomAuthorized(roomId)) {
+                showJoinRoomModal(roomId);
+                return;
+            }
+
             currentRoomId = roomId;
             document.getElementById('room_id').value = roomId;
             
@@ -44,11 +62,58 @@
                 }
             });
 
-            // Show/hide message form
+            // Show/hide chat area and message form
+            const chatArea = document.getElementById('chat-area');
             const messageForm = document.getElementById('message-form');
-            messageForm.style.display = roomId ? 'block' : 'none';
+            if (roomId) {
+                chatArea.style.display = 'block';
+                messageForm.style.display = 'block';
+            } else {
+                chatArea.style.display = 'none';
+                messageForm.style.display = 'none';
+            }
 
             refreshMessages();
+        }
+
+        function showJoinRoomModal(roomId) {
+            const modal = document.getElementById('join-room-modal');
+            document.getElementById('join-room-id').value = roomId;
+            modal.classList.remove('hidden');
+        }
+
+        function hideJoinRoomModal() {
+            const modal = document.getElementById('join-room-modal');
+            modal.classList.add('hidden');
+            document.getElementById('join-room-password').value = '';
+        }
+
+        function joinRoom(event) {
+            event.preventDefault();
+            const roomId = document.getElementById('join-room-id').value;
+            const password = document.getElementById('join-room-password').value;
+
+            fetch('/join-room', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `room_id=${roomId}&room_password=${password}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    hideJoinRoomModal();
+                    selectRoom(parseInt(roomId), true);
+                } else {
+                    alert(data.message || 'Failed to join room');
+                }
+            });
+        }
+
+        function isRoomAuthorized(roomId) {
+            const authorizedRooms = {{ authorized_rooms|tojson }};
+            return !roomId || authorizedRooms.includes(roomId);
         }
 
         // Refresh messages every 1 second
@@ -74,9 +139,60 @@
     </script>
 </head>
 <body class="bg-gray-100 min-h-screen">
+    <!-- Join Room Modal -->
+    <div id="join-room-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full">
+        <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+            <div class="mt-3">
+                <h3 class="text-lg font-medium leading-6 text-gray-900 mb-4">Join Private Room</h3>
+                <form onsubmit="joinRoom(event)" class="space-y-4">
+                    <input type="hidden" id="join-room-id">
+                    <div>
+                        <label for="join-room-password" class="block text-sm font-medium text-gray-700">Password</label>
+                        <input type="password" id="join-room-password" 
+                            class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div class="flex justify-end space-x-3">
+                        <button type="button" onclick="hideJoinRoomModal()"
+                            class="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md">
+                            Cancel
+                        </button>
+                        <button type="submit"
+                            class="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md">
+                            Join Room
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <div class="container mx-auto px-4 py-8">
         <div class="max-w-5xl mx-auto">
-            <h1 class="text-3xl font-bold text-center mb-8 text-gray-800">Local Chat Rooms</h1>
+            <div class="flex justify-between items-start mb-8">
+                <h1 class="text-3xl font-bold text-gray-800">Local Chat Rooms</h1>
+                
+                <!-- Create Room Form - Moved to top -->
+                <div class="bg-white rounded-lg shadow-lg p-6" style="min-width: 300px;">
+                    <h2 class="text-xl font-semibold mb-4">Create Room</h2>
+                    <form action="{{ url_for('create_room') }}" method="POST" class="space-y-3">
+                        <div>
+                            <input type="text" name="room_name" 
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="New room name" required>
+                        </div>
+                        <div>
+                            <input type="password" name="room_password" 
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="Room password (optional)">
+                            <p class="text-xs text-gray-500 mt-1">Leave empty for public room</p>
+                        </div>
+                        <button type="submit" 
+                            class="w-full bg-green-500 text-white py-2 px-4 rounded-md hover:bg-green-600 transition duration-200">
+                            Create Room
+                        </button>
+                    </form>
+                </div>
+            </div>
 
             {% with messages = get_flashed_messages() %}
                 {% if messages %}
@@ -87,66 +203,62 @@
                     {% endfor %}
                 {% endif %}
             {% endwith %}
-            
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <!-- Rooms Sidebar -->
-                <div class="md:col-span-1">
-                    <div class="bg-white rounded-lg shadow-lg p-6 mb-4">
-                        <h2 class="text-xl font-semibold mb-4">Chat Rooms</h2>
-                        <!-- Create Room Form -->
-                        <form action="{{ url_for('create_room') }}" method="POST" class="mb-4">
-                            <div class="flex space-x-2">
-                                <input type="text" name="room_name" 
-                                    class="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                    placeholder="New room name" required>
-                                <button type="submit" 
-                                    class="bg-green-500 text-white py-2 px-4 rounded-md hover:bg-green-600 transition duration-200">
-                                    +
-                                </button>
-                            </div>
-                        </form>
-                        <!-- Room List -->
-                        <div class="space-y-2">
-                            {% for room in rooms %}
-                                <div class="room-item p-2 rounded cursor-pointer hover:bg-blue-50 transition duration-200"
-                                     onclick="selectRoom({{ room.id }})"
-                                     data-room-id="{{ room.id }}">
-                                    {{ room.name }}
-                                </div>
-                            {% endfor %}
+
+            <!-- Room List Overview -->
+            <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-2xl font-semibold text-gray-800">Available Rooms</h2>
+                    <span class="text-sm text-gray-500">{{ rooms|length }} rooms total</span>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {% for room in rooms %}
+                    <div class="border rounded-lg p-4 hover:bg-gray-50 transition-colors duration-200 cursor-pointer"
+                         onclick="selectRoom({{ room.id }}, {{ room.is_private|tojson }})"
+                         data-room-id="{{ room.id }}">
+                        <div class="flex justify-between items-start mb-2">
+                            <h3 class="font-medium text-lg text-gray-900">{{ room.name }}</h3>
+                            {% if room.is_private %}
+                            <span class="px-2 py-1 text-xs font-medium bg-yellow-100 text-yellow-800 rounded-full">Private</span>
+                            {% else %}
+                            <span class="px-2 py-1 text-xs font-medium bg-green-100 text-green-800 rounded-full">Public</span>
+                            {% endif %}
+                        </div>
+                        <div class="text-sm text-gray-500">
+                            Created {{ room.created_at|datetime }}
                         </div>
                     </div>
+                    {% endfor %}
+                </div>
+            </div>
+            
+            <!-- Chat Area -->
+            <div id="chat-area" class="bg-white rounded-lg shadow-lg" style="display: none;">
+                <!-- Message Form -->
+                <div id="message-form" class="p-6 mb-8">
+                    <form action="{{ url_for('create_message') }}" method="POST" class="space-y-4" onsubmit="saveUsername()">
+                        <input type="hidden" id="room_id" name="room_id">
+                        <div>
+                            <label for="username" class="block text-sm font-medium text-gray-700 mb-2">Your Name</label>
+                            <input type="text" id="username" name="username" 
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="Enter your name..." required>
+                        </div>
+                        <div>
+                            <label for="message" class="block text-sm font-medium text-gray-700 mb-2">New Message</label>
+                            <textarea id="message" name="message" rows="3" 
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="Type your message here..." required></textarea>
+                        </div>
+                        <button type="submit" 
+                            class="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 transition duration-200">
+                            Send Message
+                        </button>
+                    </form>
                 </div>
 
-                <!-- Chat Area -->
-                <div class="md:col-span-3">
-                    <!-- Message Form -->
-                    <div id="message-form" class="bg-white rounded-lg shadow-lg p-6 mb-8">
-                        <form action="{{ url_for('create_message') }}" method="POST" class="space-y-4" onsubmit="saveUsername()">
-                            <input type="hidden" id="room_id" name="room_id">
-                            <div>
-                                <label for="username" class="block text-sm font-medium text-gray-700 mb-2">Your Name</label>
-                                <input type="text" id="username" name="username" 
-                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                    placeholder="Enter your name..." required>
-                            </div>
-                            <div>
-                                <label for="message" class="block text-sm font-medium text-gray-700 mb-2">New Message</label>
-                                <textarea id="message" name="message" rows="3" 
-                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                    placeholder="Type your message here..." required></textarea>
-                            </div>
-                            <button type="submit" 
-                                class="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 transition duration-200">
-                                Send Message
-                            </button>
-                        </form>
-                    </div>
-
-                    <!-- Messages List -->
-                    <div id="message-list" class="space-y-4">
-                        <!-- Messages will be loaded here -->
-                    </div>
+                <!-- Messages List -->
+                <div id="message-list" class="p-6 space-y-4">
+                    <!-- Messages will be loaded here -->
                 </div>
             </div>
         </div>
