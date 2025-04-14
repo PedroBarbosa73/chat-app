@@ -9,10 +9,10 @@ A simple web application that allows you to exchange messages with friends throu
 pip install -r requirements.txt
 ```
 
-2. Create a `.env` file with the following content:
+2. Create a `.env` file with the following structure:
 ```
 SECRET_KEY=your-secret-key-here
-AZURE_SQL_CONNECTIONSTRING=mssql+pyodbc://username:password@server.database.windows.net/database?driver=ODBC+Driver+18+for+SQL+Server
+AZURE_SQL_CONNECTIONSTRING=mssql+pyodbc://username:password@your-server.database.windows.net/your-database?driver=ODBC+Driver+18+for+SQL+Server
 PORT=5000
 ```
 
@@ -43,43 +43,37 @@ az webapp create --resource-group myResourceGroup --plan myAppServicePlan --name
 2. Create an Azure SQL Database:
 ```bash
 # Create SQL Server
-az sql server create --name your-server-name --resource-group myResourceGroup --location eastus --admin-user your-admin --admin-password your-password
+az sql server create --name your-server-name --resource-group myResourceGroup --location eastus
 
 # Create SQL Database
-az sql db create --resource-group myResourceGroup --server your-server-name --name your-database-name --edition Basic --capacity 5
+az sql db create --resource-group myResourceGroup --server your-server-name --name your-database-name --edition Basic
 ```
 
-3. Get the connection string:
-```bash
-# Get the connection string
-az sql db show-connection-string --client sqlcmd --server your-server-name --name your-database-name
-```
+3. Set up your environment variables in Azure App Service:
+- Go to your App Service in Azure Portal
+- Navigate to Settings > Configuration
+- Add your SECRET_KEY and AZURE_SQL_CONNECTIONSTRING as new application settings
+- Never commit these values to source control
 
-4. Set the environment variables in Azure:
-```bash
-az webapp config appsettings set --resource-group myResourceGroup --name your-app-name --settings \
-    SECRET_KEY="your-secret-key" \
-    AZURE_SQL_CONNECTIONSTRING="your-connection-string"
-```
-
-5. Configure the firewall to allow Azure services:
+4. Configure the firewall to allow Azure services:
 ```bash
 az sql server firewall-rule create --resource-group myResourceGroup --server your-server-name --name AllowAzureServices --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0
 ```
 
-6. Deploy your application:
+5. Deploy your application:
 ```bash
 git add .
-git commit -m "Ready for Azure deployment"
+git commit -m "Ready for deployment"
 git push azure main
 ```
 
-## How to Use
+## Security Notes
 
-1. Type your message in the text area
-2. Click "Create Message Link"
-3. Share the generated URL with your friend
-4. Your friend can view the message by opening the URL
+1. Never commit your `.env` file to version control
+2. Keep your secret key private and secure
+3. Use environment variables for all sensitive information
+4. Regularly rotate your database credentials and secret keys
+5. Use strong, unique passwords for your database
 
 ## Features
 
