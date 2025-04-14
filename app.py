@@ -90,6 +90,26 @@ class Message(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
+class User(db.Model):
+    __tablename__ = 'users'
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(50), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'username': self.username,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
 def init_db():
     try:
         with app.app_context():
@@ -109,6 +129,9 @@ init_db()
 
 @app.route('/')
 def home():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    
     rooms = Room.query.order_by(Room.name).all()
     authorized_rooms = session.get('authorized_rooms', [])
     return render_template('index.html', rooms=rooms, authorized_rooms=authorized_rooms)
@@ -235,6 +258,59 @@ def create_message():
         db.session.rollback()
         flash('Error creating message')
         return redirect(url_for('home'))
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        user = User.query.filter_by(username=username).first()
+        if user and user.check_password(password):
+            session['user_id'] = user.id
+            session['username'] = user.username
+            return redirect(url_for('home'))
+        
+        flash('Invalid username or password')
+        return redirect(url_for('login'))
+    
+    return render_template('login.html')
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        if not username or not password:
+            flash('Username and password are required')
+            return redirect(url_for('register'))
+        
+        if User.query.filter_by(username=username).first():
+            flash('Username already exists')
+            return redirect(url_for('register'))
+        
+        user = User(username=username)
+        user.set_password(password)
+        
+        try:
+            db.session.add(user)
+            db.session.commit()
+            session['user_id'] = user.id
+            session['username'] = user.username
+            return redirect(url_for('home'))
+        except Exception as e:
+            logger.error(f"Error registering user: {str(e)}")
+            db.session.rollback()
+            flash('Error registering user')
+            return redirect(url_for('register'))
+    
+    return render_template('register.html')
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
 
 if __name__ == '__main__':
     # Get local IP address
