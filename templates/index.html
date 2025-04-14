@@ -56,6 +56,8 @@
             fetch(`/messages?room_id=${currentRoomId}&page=${page}`)
                 .then(response => response.json())
                 .then(data => {
+                    const messageForm = document.getElementById('message-form');
+                    
                     if (data.error) {
                         // Handle unauthorized access
                         document.getElementById('message-list').innerHTML = `
@@ -63,9 +65,16 @@
                                 ${data.error}
                             </div>
                         `;
-                        document.getElementById('message-form').style.display = 'none';
+                        console.log('Error fetching messages:', data.error);
+                        messageForm.style.display = 'none';
                         return;
                     }
+
+                    console.log('Messages fetched successfully');
+                    // Show message form on successful fetch
+                    messageForm.style.display = 'block';
+                    messageForm.style.visibility = 'visible';
+                    messageForm.style.opacity = '1';
 
                     const messageList = document.getElementById('message-list');
                     
@@ -103,6 +112,10 @@
                         messageList.scrollTop = messageList.scrollHeight;
                     }
 
+                    // Show message form if we successfully got messages
+                    messageForm.style.display = 'block';
+                    messageForm.style.visibility = 'visible';
+                    messageForm.style.opacity = '1';
                     isLoadingMessages = false;
                 })
                 .catch(error => {
@@ -125,6 +138,7 @@
                 return;
             }
 
+            console.log('Selecting room:', roomId);
             currentRoomId = roomId;
             currentPage = 1;
             hasMoreMessages = true;
@@ -150,16 +164,24 @@
                 document.getElementById('room-status').textContent = isPrivateRoom ? 'Private Room' : 'Public Room';
             }
 
-            // Show chat area with flex display
+            // Show chat area and message form
             const chatArea = document.getElementById('chat-area');
+            const messageForm = document.getElementById('message-form');
+            
+            console.log('Displaying chat area and message form');
             chatArea.style.display = 'flex';
+            messageForm.style.display = 'block';
+            messageForm.style.visibility = 'visible'; // Add explicit visibility
+            messageForm.style.opacity = '1'; // Ensure it's visible
             
             // Clear and refresh messages
             document.getElementById('message-list').innerHTML = '';
             refreshMessages();
 
             // Focus on message input
-            document.getElementById('message').focus();
+            const messageInput = document.getElementById('message');
+            messageInput.style.display = 'block'; // Ensure textarea is visible
+            messageInput.focus();
 
             // Scroll to chat area with smooth animation
             chatArea.scrollIntoView({ behavior: 'smooth', block: 'start' });
