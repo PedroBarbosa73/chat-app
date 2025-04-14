@@ -6,20 +6,61 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Local Chat - Rooms</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        .main-container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 0;
+            display: flex;
+            gap: 2rem;
+        }
+        .left-sidebar {
+            width: 250px;
+            padding-left: 0;
+            margin-left: 0;
+            flex-shrink: 0;
+        }
+        .right-sidebar {
+            width: 250px;
+            padding-right: 0;
+            margin-right: 0;
+            flex-shrink: 0;
+        }
+        .main-content {
+            flex: 1;
+            min-width: 0;
+        }
+        .sidebar-box {
+            background: white;
+            border-radius: 0.5rem;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            padding: 1rem;
+        }
+    </style>
     <script>
         let currentRoomId = null;
+        let favoriteRoomIds = {{ favorite_room_ids|tojson }};
+        let currentPage = 1;
+        let isLoadingMessages = false;
+        let hasMoreMessages = true;
 
-        function refreshMessages() {
-            if (!currentRoomId) return;
+        function refreshMessages(loadMore = false) {
+            if (!currentRoomId || isLoadingMessages) return;
 
-            fetch(`/messages?room_id=${currentRoomId}`)
+            if (loadMore && !hasMoreMessages) return;
+
+            const page = loadMore ? currentPage + 1 : 1;
+            isLoadingMessages = true;
+
+            fetch(`/messages?room_id=${currentRoomId}&page=${page}`)
                 .then(response => response.json())
-                .then(messages => {
-                    if (messages.error) {
+                .then(data => {
+                    if (data.error) {
                         // Handle unauthorized access
                         document.getElementById('message-list').innerHTML = `
                             <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
-                                You are not authorized to view this room's messages.
+                                ${data.error}
                             </div>
                         `;
                         document.getElementById('message-form').style.display = 'none';
@@ -27,9 +68,20 @@
                     }
 
                     const messageList = document.getElementById('message-list');
-                    messageList.innerHTML = '';
-                    // Reverse the messages array to show newest at the bottom
-                    messages.reverse().forEach(msg => {
+                    
+                    // If loading more messages, append them; otherwise, clear the list
+                    if (!loadMore) {
+                        messageList.innerHTML = '';
+                        currentPage = 1;
+                    } else {
+                        currentPage = page;
+                    }
+
+                    // Update scroll state
+                    hasMoreMessages = data.has_next;
+                    
+                    // Add messages to the list
+                    data.messages.forEach(msg => {
                         const messageDiv = document.createElement('div');
                         messageDiv.className = 'bg-white p-4 rounded-lg shadow mb-4';
                         messageDiv.innerHTML = `
@@ -39,11 +91,32 @@
                             </div>
                             <p class="text-gray-800 whitespace-pre-wrap">${msg.content}</p>
                         `;
-                        messageList.appendChild(messageDiv);
+                        if (loadMore) {
+                            messageList.appendChild(messageDiv);
+                        } else {
+                            messageList.insertBefore(messageDiv, messageList.firstChild);
+                        }
                     });
-                    // Scroll to bottom of message list
-                    messageList.scrollTop = messageList.scrollHeight;
+
+                    // If not loading more, scroll to bottom
+                    if (!loadMore) {
+                        messageList.scrollTop = messageList.scrollHeight;
+                    }
+
+                    isLoadingMessages = false;
+                })
+                .catch(error => {
+                    console.error('Error fetching messages:', error);
+                    isLoadingMessages = false;
                 });
+        }
+
+        function handleMessageListScroll() {
+            const messageList = document.getElementById('message-list');
+            // If scrolled near the top (100px threshold) and we have more messages
+            if (messageList.scrollTop < 100 && hasMoreMessages && !isLoadingMessages) {
+                refreshMessages(true);
+            }
         }
 
         function selectRoom(roomId, isPrivate) {
@@ -53,6 +126,8 @@
             }
 
             currentRoomId = roomId;
+            currentPage = 1;
+            hasMoreMessages = true;
             document.getElementById('room_id').value = roomId;
             
             // Update active room styling
@@ -76,7 +151,8 @@
             }
 
             // Show chat area with flex display
-            document.getElementById('chat-area').style.display = 'flex';
+            const chatArea = document.getElementById('chat-area');
+            chatArea.style.display = 'flex';
             
             // Clear and refresh messages
             document.getElementById('message-list').innerHTML = '';
@@ -84,6 +160,9 @@
 
             // Focus on message input
             document.getElementById('message').focus();
+
+            // Scroll to chat area with smooth animation
+            chatArea.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
 
         function showJoinRoomModal(roomId) {
@@ -211,113 +290,146 @@
                 sendMessage();
             }
         });
+
+        function updateStarIcons(roomId, isFavorite) {
+            // Update all star icons for this room (both in available rooms and favorites)
+            document.querySelectorAll(`[data-room-id="${roomId}"] .favorite-star`).forEach(starIcon => {
+                if (isFavorite) {
+                    starIcon.classList.remove('far');
+                    starIcon.classList.add('fas');
+                } else {
+                    starIcon.classList.remove('fas');
+                    starIcon.classList.add('far');
+                }
+            });
+        }
+
+        function toggleFavorite(roomId, event) {
+            event.stopPropagation(); // Prevent room selection when clicking the star
+            
+            fetch('/favorite-room', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `room_id=${roomId}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Update star icons
+                    updateStarIcons(roomId, data.is_favorite);
+
+                    if (data.is_favorite) {
+                        favoriteRoomIds.push(roomId);
+                        addToFavorites(roomId);
+                    } else {
+                        favoriteRoomIds = favoriteRoomIds.filter(id => id !== roomId);
+                        removeFromFavorites(roomId);
+                    }
+                } else {
+                    alert(data.message || 'Error updating favorite status');
+                }
+            });
+        }
+
+        function addToFavorites(roomId) {
+            const roomElement = document.querySelector(`[data-room-id="${roomId}"]`);
+            const favoritesList = document.getElementById('favorites-list');
+            
+            // Check if room is already in favorites
+            if (!document.querySelector(`#favorites-list [data-room-id="${roomId}"]`)) {
+                const favoriteRoom = roomElement.cloneNode(true);
+                favoriteRoom.classList.add('favorite-item');
+                favoritesList.appendChild(favoriteRoom);
+                updateFavoritesCount();
+            }
+        }
+
+        function removeFromFavorites(roomId) {
+            const favoriteRoom = document.querySelector(`#favorites-list [data-room-id="${roomId}"]`);
+            if (favoriteRoom) {
+                favoriteRoom.remove();
+                updateFavoritesCount();
+            }
+        }
+
+        function updateFavoritesCount() {
+            const count = document.querySelectorAll('#favorites-list .room-item').length;
+            document.getElementById('favorites-count').textContent = count;
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // Initialize favorites
+            favoriteRoomIds.forEach(roomId => {
+                addToFavorites(roomId);
+            });
+            updateFavoritesCount();
+
+            // Add scroll event listener to message list
+            const messageList = document.getElementById('message-list');
+            messageList.addEventListener('scroll', handleMessageListScroll);
+        });
     </script>
 </head>
 <body class="bg-gray-100 min-h-screen">
-    <!-- Join Room Modal -->
-    <div id="join-room-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full">
-        <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
-            <div class="mt-3">
-                <h3 class="text-lg font-medium leading-6 text-gray-900 mb-4">Join Private Room</h3>
-                <form onsubmit="joinRoom(event)" class="space-y-4">
-                    <input type="hidden" id="join-room-id">
-                    <div>
-                        <label for="join-room-password" class="block text-sm font-medium text-gray-700">Password</label>
-                        <input type="password" id="join-room-password" 
-                            class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
-                    </div>
-                    <div class="flex justify-end space-x-3">
-                        <button type="button" onclick="hideJoinRoomModal()"
-                            class="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md">
-                            Cancel
-                        </button>
-                        <button type="submit"
-                            class="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md">
-                            Join Room
-                        </button>
-                    </div>
-                </form>
+    <div class="main-container">
+        <!-- Left Sidebar - Favorites -->
+        <div class="left-sidebar">
+            <div class="sidebar-box">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold text-gray-800">Favorite Rooms</h2>
+                    <span class="text-sm text-gray-500"><span id="favorites-count">0</span> rooms</span>
+                </div>
+                <div id="favorites-list" class="space-y-2">
+                    <!-- Favorite rooms will be added here dynamically -->
+                </div>
             </div>
         </div>
-    </div>
 
-    <div class="container mx-auto px-4 py-8">
-        <div class="max-w-5xl mx-auto">
-            <div class="flex justify-between items-start mb-8">
+        <!-- Main Content Area -->
+        <div class="main-content">
+            <div class="flex justify-between items-center mb-8">
                 <h1 class="text-3xl font-bold text-gray-800">Local Chat Rooms</h1>
-                
                 <div class="flex items-center space-x-4">
                     <span class="text-gray-600">Welcome, {{ session['username'] }}</span>
-                    <a href="{{ url_for('logout') }}" 
-                        class="bg-red-500 text-white py-2 px-4 rounded-md hover:bg-red-600 transition duration-200">
-                        Logout
-                    </a>
+                    <a href="{{ url_for('logout') }}" class="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600">Logout</a>
                 </div>
             </div>
 
-            <!-- Create Room Form - Moved to top -->
-            <div class="bg-white rounded-lg shadow-lg p-6" style="min-width: 300px;">
-                <h2 class="text-xl font-semibold mb-4">Create Room</h2>
-                <form action="{{ url_for('create_room') }}" method="POST" class="space-y-3">
-                    <div>
-                        <input type="text" name="room_name" 
-                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            placeholder="New room name" required>
-                    </div>
-                    <div>
-                        <input type="password" name="room_password" 
-                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            placeholder="Room password (optional)">
-                        <p class="text-xs text-gray-500 mt-1">Leave empty for public room</p>
-                    </div>
-                    <button type="submit" 
-                        class="w-full bg-green-500 text-white py-2 px-4 rounded-md hover:bg-green-600 transition duration-200">
-                        Create Room
-                    </button>
-                </form>
-            </div>
-
-            {% with messages = get_flashed_messages() %}
-                {% if messages %}
-                    {% for message in messages %}
-                        <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
-                            {{ message }}
-                        </div>
-                    {% endfor %}
-                {% endif %}
-            {% endwith %}
-
-            <!-- Room List Overview -->
-            <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
-                <div class="flex justify-between items-center mb-6">
-                    <h2 class="text-2xl font-semibold text-gray-800">Available Rooms</h2>
+            <!-- Available Rooms Section -->
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold text-gray-800">Available Rooms</h2>
                     <span class="text-sm text-gray-500">{{ rooms|length }} rooms total</span>
                 </div>
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {% for room in rooms %}
-                    <div class="room-item border rounded-lg p-4 hover:bg-gray-50 transition-colors duration-200 cursor-pointer"
+                    <div class="room-item cursor-pointer bg-gray-50 p-4 rounded-lg hover:bg-gray-100 transition-colors duration-200"
                          onclick="selectRoom({{ room.id }}, {{ room.is_private|tojson }})"
                          data-room-id="{{ room.id }}">
-                        <div class="flex justify-between items-start mb-2">
-                            <h3 class="font-medium text-lg text-gray-900">{{ room.name }}</h3>
-                            {% if room.is_private %}
-                            <span class="px-2 py-1 text-xs font-medium bg-yellow-100 text-yellow-800 rounded-full">Private</span>
-                            {% else %}
-                            <span class="px-2 py-1 text-xs font-medium bg-green-100 text-green-800 rounded-full">Public</span>
-                            {% endif %}
+                        <div class="flex justify-between items-start">
+                            <h3 class="font-medium text-gray-800">{{ room.name }}</h3>
+                            <i class="favorite-star cursor-pointer {{ 'fas' if room.id in favorite_room_ids else 'far' }} fa-star text-yellow-400"
+                               onclick="toggleFavorite({{ room.id }}, event)"></i>
                         </div>
-                        <div class="text-sm text-gray-500">
-                            Created {{ room.created_at|datetime }}
+                        <div class="flex items-center mt-2">
+                            <span class="text-xs {{ 'bg-yellow-100 text-yellow-800' if room.is_private else 'bg-green-100 text-green-800' }} px-2 py-1 rounded">
+                                {{ 'Private' if room.is_private else 'Public' }}
+                            </span>
+                            <span class="text-xs text-gray-500 ml-2">
+                                Created {{ room.created_at|datetime }}
+                            </span>
                         </div>
                     </div>
                     {% endfor %}
                 </div>
             </div>
-            
+
             <!-- Chat Area -->
-            <div id="chat-area" class="bg-white rounded-lg shadow-lg flex flex-col min-h-[600px]" style="display: none;">
+            <div id="chat-area" class="bg-white rounded-lg shadow-md p-6 mt-6" style="display: none;">
                 <!-- Current Room Header -->
-                <div id="current-room-header" class="border-b bg-gray-50">
+                <div id="current-room-header" class="border-b bg-gray-50 mb-4">
                     <div class="p-4">
                         <h2 id="current-room-name" class="text-xl font-semibold text-gray-800"></h2>
                         <p id="room-status" class="text-sm text-gray-500 mt-1"></p>
@@ -325,28 +437,77 @@
                 </div>
 
                 <!-- Messages List -->
-                <div id="message-list" class="flex-grow overflow-y-auto p-6 space-y-4">
+                <div id="message-list" class="flex-grow overflow-y-auto p-4 space-y-4" style="height: 500px; max-height: 500px;">
                     <!-- Messages will be loaded here -->
                 </div>
 
                 <!-- Message Form -->
-                <div id="message-form" class="border-t bg-white p-6 mt-auto">
+                <div id="message-form" class="border-t bg-white pt-4 mt-4">
                     <form id="message-form-element" onsubmit="return false;" class="space-y-4">
                         <input type="hidden" id="room_id" name="room_id">
                         <input type="hidden" name="username" value="{{ session['username'] }}">
                         <div>
                             <label for="message" class="block text-sm font-medium text-gray-700 mb-2">New Message</label>
                             <textarea id="message" name="message" rows="3" 
-                                class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 placeholder="Type your message here..." required></textarea>
                         </div>
                         <button type="button" onclick="sendMessage()"
-                            class="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 transition duration-200">
+                            class="w-full bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600">
                             Send Message
                         </button>
                     </form>
                 </div>
             </div>
+        </div>
+
+        <!-- Right Sidebar - Create Room -->
+        <div class="right-sidebar">
+            <div class="sidebar-box">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold text-gray-800">Create Room</h2>
+                </div>
+                <form action="{{ url_for('create_room') }}" method="POST" class="space-y-4">
+                    <div>
+                        <input type="text" name="room_name" placeholder="New room name" required
+                               class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+                    <div>
+                        <input type="password" name="room_password" placeholder="Room password (optional)"
+                               class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <p class="text-sm text-gray-500 mt-1">Leave empty for public room</p>
+                    </div>
+                    <button type="submit" class="w-full bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600">
+                        Create Room
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Join Room Modal -->
+    <div id="join-room-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
+        <div class="bg-white p-6 rounded-lg shadow-xl w-96">
+            <h3 class="text-xl font-semibold mb-4">Join Private Room</h3>
+            <form onsubmit="joinRoom(event)" class="space-y-4">
+                <input type="hidden" id="join-room-id">
+                <div>
+                    <label for="join-room-password" class="block text-sm font-medium text-gray-700 mb-2">Room Password</label>
+                    <input type="password" id="join-room-password" 
+                           class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                           placeholder="Enter room password" required>
+                </div>
+                <div class="flex justify-end space-x-3">
+                    <button type="button" onclick="hideJoinRoomModal()"
+                            class="px-4 py-2 border rounded-lg hover:bg-gray-100">
+                        Cancel
+                    </button>
+                    <button type="submit"
+                            class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600">
+                        Join Room
+                    </button>
+                </div>
+            </form>
         </div>
     </div>
 </body>

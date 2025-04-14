@@ -112,6 +112,29 @@ class User(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
+class FavoriteRoom(db.Model):
+    __tablename__ = 'favorite_rooms'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    room_id = db.Column(db.Integer, db.ForeignKey('rooms.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Add unique constraint to prevent duplicate favorites
+    __table_args__ = (db.UniqueConstraint('user_id', 'room_id', name='unique_user_room_favorite'),)
+
+    # Relationships
+    user = db.relationship('User', backref=db.backref('favorite_rooms', lazy=True))
+    room = db.relationship('Room', backref=db.backref('favorited_by', lazy=True))
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'room_id': self.room_id,
+            'room_name': self.room.name,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
 # Create tables if they don't exist
 with app.app_context():
     try:
@@ -119,17 +142,10 @@ with app.app_context():
         inspector = db.inspect(db.engine)
         existing_tables = inspector.get_table_names()
         
-        # Only create tables that don't exist
-        tables_to_create = []
-        for model in [Room, Message, User]:
-            if model.__tablename__ not in existing_tables:
-                tables_to_create.append(model)
+        # Create all tables if they don't exist
+        db.create_all()
         
-        if tables_to_create:
-            logger.info(f"Creating new tables: {[model.__tablename__ for model in tables_to_create]}")
-            db.create_all(tables=tables_to_create)
-        else:
-            logger.info("All tables already exist, skipping creation")
+        logger.info("Tables created/updated successfully")
     except Exception as e:
         logger.error(f"Error during table creation: {str(e)}")
         raise
@@ -141,7 +157,15 @@ def home():
     
     rooms = Room.query.order_by(Room.name).all()
     authorized_rooms = session.get('authorized_rooms', [])
-    return render_template('index.html', rooms=rooms, authorized_rooms=authorized_rooms)
+    
+    # Get favorite rooms for the current user
+    favorite_rooms = FavoriteRoom.query.filter_by(user_id=session['user_id']).all()
+    favorite_room_ids = [fav.room_id for fav in favorite_rooms]
+    
+    return render_template('index.html', 
+                         rooms=rooms, 
+                         authorized_rooms=authorized_rooms,
+                         favorite_room_ids=favorite_room_ids)
 
 @app.route('/create-room', methods=['POST'])
 def create_room():
@@ -216,23 +240,35 @@ def join_room():
 def get_messages():
     try:
         room_id = request.args.get('room_id', type=int)
+        page = request.args.get('page', 1, type=int)
+        per_page = 50  # Number of messages per page
+        
         if not room_id:
-            return jsonify([])
+            return jsonify({'error': 'Room ID is required'})
         
         # Check if user is authorized for private rooms
         room = Room.query.get(room_id)
         if not room:
-            return jsonify([])
-            
-        authorized_rooms = session.get('authorized_rooms', [])
-        if room.is_private and room_id not in authorized_rooms:
+            return jsonify({'error': 'Room not found'})
+        
+        if room.is_private and room_id not in session.get('authorized_rooms', []):
             return jsonify({'error': 'Unauthorized'})
         
-        messages = Message.query.filter_by(room_id=room_id).order_by(Message.created_at.desc()).all()
-        return jsonify([message.to_dict() for message in messages])
+        # Get messages with pagination, ordered by created_at descending
+        messages = Message.query.filter_by(room_id=room_id)\
+            .order_by(Message.created_at.desc())\
+            .paginate(page=page, per_page=per_page, error_out=False)
+        
+        return jsonify({
+            'messages': [msg.to_dict() for msg in messages.items],
+            'has_next': messages.has_next,
+            'next_page': messages.next_num if messages.has_next else None,
+            'total': messages.total
+        })
+    
     except Exception as e:
-        logger.error(f"Error fetching messages: {str(e)}")
-        return jsonify([])
+        logger.error(f"Error getting messages: {str(e)}")
+        return jsonify({'error': 'Error getting messages'})
 
 @app.route('/create', methods=['POST'])
 def create_message():
@@ -322,6 +358,71 @@ def register():
 def logout():
     session.clear()
     return redirect(url_for('login'))
+
+@app.route('/favorite-room', methods=['POST'])
+def favorite_room():
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'message': 'Please login first'})
+    
+    try:
+        room_id = request.form.get('room_id', type=int)
+        if not room_id:
+            return jsonify({'success': False, 'message': 'Room ID is required'})
+        
+        # Check if room exists
+        room = Room.query.get(room_id)
+        if not room:
+            return jsonify({'success': False, 'message': 'Room not found'})
+        
+        # Check if already favorited
+        existing_favorite = FavoriteRoom.query.filter_by(
+            user_id=session['user_id'],
+            room_id=room_id
+        ).first()
+        
+        if existing_favorite:
+            # If already favorited, unfavorite it
+            db.session.delete(existing_favorite)
+            db.session.commit()
+            return jsonify({
+                'success': True,
+                'message': 'Room removed from favorites',
+                'is_favorite': False
+            })
+        
+        # Add to favorites
+        new_favorite = FavoriteRoom(
+            user_id=session['user_id'],
+            room_id=room_id
+        )
+        db.session.add(new_favorite)
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Room added to favorites',
+            'is_favorite': True
+        })
+    
+    except Exception as e:
+        logger.error(f"Error managing favorite room: {str(e)}")
+        db.session.rollback()
+        return jsonify({'success': False, 'message': 'Error managing favorite room'})
+
+@app.route('/favorite-rooms')
+def get_favorite_rooms():
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'message': 'Please login first'})
+    
+    try:
+        favorites = FavoriteRoom.query.filter_by(user_id=session['user_id']).all()
+        return jsonify({
+            'success': True,
+            'favorites': [fav.to_dict() for fav in favorites]
+        })
+    except Exception as e:
+        logger.error(f"Error getting favorite rooms: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error getting favorite rooms'})
 
 if __name__ == '__main__':
     # Get local IP address
