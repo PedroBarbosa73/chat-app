@@ -54,11 +54,13 @@ class Room(db.Model):
             self.is_private = False
 
     def check_password(self, password):
-        if not self.is_private:
-            return True
-        if not password:
-            return False
-        return check_password_hash(self.password_hash, password)
+        # If room is private and has a password hash, require password
+        if self.is_private and self.password_hash:
+            if not password:
+                return False
+            return check_password_hash(self.password_hash, password)
+        # If room is not private or has no password hash, allow access
+        return True
 
     def to_dict(self):
         return {
@@ -112,7 +114,25 @@ class User(db.Model):
 
 # Create tables if they don't exist
 with app.app_context():
-    db.create_all()
+    try:
+        # Check if tables exist
+        inspector = db.inspect(db.engine)
+        existing_tables = inspector.get_table_names()
+        
+        # Only create tables that don't exist
+        tables_to_create = []
+        for model in [Room, Message, User]:
+            if model.__tablename__ not in existing_tables:
+                tables_to_create.append(model)
+        
+        if tables_to_create:
+            logger.info(f"Creating new tables: {[model.__tablename__ for model in tables_to_create]}")
+            db.create_all(tables=tables_to_create)
+        else:
+            logger.info("All tables already exist, skipping creation")
+    except Exception as e:
+        logger.error(f"Error during table creation: {str(e)}")
+        raise
 
 @app.route('/')
 def home():
@@ -177,7 +197,15 @@ def join_room():
             if room_id not in authorized_rooms:
                 authorized_rooms.append(room_id)
                 session['authorized_rooms'] = authorized_rooms
-            return jsonify({'success': True})
+                session.modified = True
+                # Force session to be saved
+                session.permanent = True
+            return jsonify({
+                'success': True,
+                'room_id': room_id,
+                'is_private': room.is_private,
+                'room_name': room.name
+            })
         else:
             return jsonify({'success': False, 'message': 'Incorrect password'})
     except Exception as e:
@@ -214,19 +242,16 @@ def create_message():
         room_id = request.form.get('room_id', type=int)
         
         if not content or not room_id:
-            flash('Message and room selection are required')
-            return redirect(url_for('home'))
+            return jsonify({'success': False, 'message': 'Message and room selection are required'})
         
         # Verify room exists and user is authorized
         room = Room.query.get(room_id)
         if not room:
-            flash('Selected room does not exist')
-            return redirect(url_for('home'))
+            return jsonify({'success': False, 'message': 'Selected room does not exist'})
             
         authorized_rooms = session.get('authorized_rooms', [])
         if room.is_private and room_id not in authorized_rooms:
-            flash('You are not authorized to post in this room')
-            return redirect(url_for('home'))
+            return jsonify({'success': False, 'message': 'You are not authorized to post in this room'})
         
         message_id = secrets.token_urlsafe(8)
         new_message = Message(
@@ -239,12 +264,11 @@ def create_message():
         db.session.commit()
         logger.info(f"Message created successfully with ID: {message_id} by user: {username} in room: {room.name}")
         
-        return redirect(url_for('home'))
+        return jsonify({'success': True})
     except Exception as e:
         logger.error(f"Error creating message: {str(e)}")
         db.session.rollback()
-        flash('Error creating message')
-        return redirect(url_for('home'))
+        return jsonify({'success': False, 'message': 'Error creating message'})
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():

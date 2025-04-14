@@ -35,10 +35,9 @@
                         messageDiv.innerHTML = `
                             <div class="flex items-center mb-2">
                                 <span class="font-semibold text-blue-600">${msg.username}</span>
-                                <span class="text-xs text-gray-500 ml-2">${new Date(msg.created_at).toLocaleString()}</span>
+                                <span class="text-xs text-gray-500 ml-2">${new Date(msg.created_at).toLocaleString('en-GB', { hour12: false })}</span>
                             </div>
                             <p class="text-gray-800 whitespace-pre-wrap">${msg.content}</p>
-                            <p class="text-xs text-gray-500 mt-2">Message ID: ${msg.message_id}</p>
                         `;
                         messageList.appendChild(messageDiv);
                     });
@@ -115,7 +114,32 @@
             .then(data => {
                 if (data.success) {
                     hideJoinRoomModal();
-                    selectRoom(parseInt(roomId), true);
+                    // Update the room header immediately
+                    document.getElementById('current-room-name').textContent = data.room_name;
+                    document.getElementById('room-status').textContent = data.is_private ? 'Private Room' : 'Public Room';
+                    
+                    // Show the chat area
+                    document.getElementById('chat-area').style.display = 'flex';
+                    document.getElementById('message-form').style.display = 'block';
+                    
+                    // Set the current room ID and update the form
+                    currentRoomId = data.room_id;
+                    document.getElementById('room_id').value = data.room_id;
+                    
+                    // Update active room styling
+                    document.querySelectorAll('.room-item').forEach(item => {
+                        if (item.dataset.roomId === data.room_id.toString()) {
+                            item.classList.add('bg-blue-100');
+                        } else {
+                            item.classList.remove('bg-blue-100');
+                        }
+                    });
+                    
+                    // Refresh messages
+                    refreshMessages();
+                    
+                    // Focus on message input
+                    document.getElementById('message').focus();
                 } else {
                     alert(data.message || 'Failed to join room');
                 }
@@ -146,6 +170,46 @@
             }
             // Hide message form initially
             document.getElementById('message-form').style.display = 'none';
+        });
+
+        // Add this function to handle message sending
+        function sendMessage() {
+            const message = document.getElementById('message').value;
+            const roomId = document.getElementById('room_id').value;
+            const username = '{{ session["username"] }}';
+
+            if (!message.trim()) return;
+
+            fetch('/create', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `message=${encodeURIComponent(message)}&room_id=${roomId}&username=${encodeURIComponent(username)}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Clear the message input
+                    document.getElementById('message').value = '';
+                    // Refresh messages to show the new one
+                    refreshMessages();
+                } else {
+                    alert(data.message || 'Error sending message');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error sending message');
+            });
+        }
+
+        // Add event listener for Enter key in message input
+        document.getElementById('message').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
         });
     </script>
 </head>
@@ -267,7 +331,7 @@
 
                 <!-- Message Form -->
                 <div id="message-form" class="border-t bg-white p-6 mt-auto">
-                    <form action="{{ url_for('create_message') }}" method="POST" class="space-y-4">
+                    <form id="message-form-element" onsubmit="return false;" class="space-y-4">
                         <input type="hidden" id="room_id" name="room_id">
                         <input type="hidden" name="username" value="{{ session['username'] }}">
                         <div>
@@ -276,7 +340,7 @@
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 placeholder="Type your message here..." required></textarea>
                         </div>
-                        <button type="submit" 
+                        <button type="button" onclick="sendMessage()"
                             class="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 transition duration-200">
                             Send Message
                         </button>
