@@ -110,22 +110,9 @@ class User(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
-def init_db():
-    try:
-        with app.app_context():
-            # Drop existing tables
-            db.drop_all()
-            logger.info("Dropped existing tables")
-            
-            # Create tables with new schema
-            db.create_all()
-            logger.info("Database tables created successfully with new schema")
-    except Exception as e:
-        logger.error(f"Error creating database tables: {str(e)}")
-        raise
-
-# Initialize database
-init_db()
+# Create tables if they don't exist
+with app.app_context():
+    db.create_all()
 
 @app.route('/')
 def home():
