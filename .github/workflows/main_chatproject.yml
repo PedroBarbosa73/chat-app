@@ -56,14 +56,24 @@ jobs:
           DEPLOY_PATTERNS=("*.py" "*.html" "*.css" "*.js" "requirements.txt" ".env" "static/*" "templates/*")
           CHANGES_DETECTED=false
           
+          # Get changed files
+          CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }})
+          echo "Changed files: $CHANGED_FILES"
+          
           for pattern in "${DEPLOY_PATTERNS[@]}"; do
-            if git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep -q "$pattern"; then
+            if echo "$CHANGED_FILES" | grep -q "$pattern"; then
               CHANGES_DETECTED=true
+              echo "Match found for pattern: $pattern"
               break
             fi
           done
           
-          echo "changes_detected=$CHANGES_DETECTED" >> $GITHUB_OUTPUT
+          echo "Changes detected: $CHANGES_DETECTED"
+          echo "changes_detected=$CHANGES_DETECTED" >> "$GITHUB_OUTPUT"
+
+      - name: Debug output
+        run: |
+          echo "Changes detected value: ${{ steps.check_changes.outputs.changes_detected }}"
 
       - name: Zip artifact for deployment
         if: steps.check_changes.outputs.changes_detected == 'true'
@@ -112,4 +122,7 @@ jobs:
           app-name: 'Chatproject'
           publish-profile: ${{ secrets.AZUREWEBAPP_PUBLISHPROFILE_E0F0F0F0E0F0F0F0E0F0F0F0E0F0F0F0 }}
           package: .
+      
+    outputs:
+      changes_detected: ${{ steps.check_changes.outputs.changes_detected }}
       
