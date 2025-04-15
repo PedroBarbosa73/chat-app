@@ -1451,7 +1451,7 @@
                     <div class="flex justify-between items-center mt-1">
                         <span class="text-xs ${isOutgoing ? 'text-blue-100' : 'text-gray-500'}">${senderUsername}</span>
                         <span class="text-xs ${isOutgoing ? 'text-blue-100' : 'text-gray-500'} message-timestamp ml-2" 
-                              data-timestamp="${timestamp}">just now</span>
+                              data-timestamp="${timestamp}">${formatTimeAgo(timestamp)}</span>
                     </div>
                 </div>
             `;
@@ -1544,106 +1544,94 @@
         function startPrivateMessagePolling() {
             console.log('Starting private message polling');
             let lastMessageCounts = new Map();
+            let lastMessageIds = new Map();
             const currentUsername = '{{ session["username"] }}';
+            let lastPollTime = new Date().getTime();
+            let pollInProgress = false;
 
             // Initialize polling for all users
-            function initializeMessageCounts() {
-                fetch('/users')
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.success) {
-                            data.users.forEach(user => {
-                                if (user.username !== currentUsername) {
-                                    if (!lastMessageCounts.has(user.username)) {
-                                        fetch(`/get-private-messages?username=${encodeURIComponent(user.username)}`)
-                                            .then(response => response.json())
-                                            .then(msgData => {
-                                                if (msgData.success) {
-                                                    lastMessageCounts.set(user.username, msgData.messages.length);
-                                                }
-                                            });
-                                    }
-                                }
-                            });
-                        }
-                    });
-            }
+            async function pollMessages() {
+                if (pollInProgress) return;
+                
+                const now = new Date().getTime();
+                if (now - lastPollTime < 300) return; // Reduce polling interval to 300ms
+                lastPollTime = now;
 
-            initializeMessageCounts();
-            setInterval(initializeMessageCounts, 30000);
-
-            setInterval(async () => {
                 try {
-                    const response = await fetch('/users');
-                    const userData = await response.json();
+                    pollInProgress = true;
+                    const activeChats = Array.from(activePrivateChats.keys());
+                    if (activeChats.length === 0) return;
+
+                    // Batch request for all active chats
+                    const promises = activeChats.map(username => 
+                        fetch(`/get-private-messages?username=${encodeURIComponent(username)}&last_message_id=${lastMessageIds.get(username) || 0}`)
+                            .then(response => response.json())
+                            .then(data => ({ username, data }))
+                    );
+
+                    const results = await Promise.all(promises);
                     
-                    if (userData.success) {
-                        for (const user of userData.users) {
-                            if (user.username === currentUsername) continue;
+                    for (const { username, data } of results) {
+                        if (data.success && data.messages.length > 0) {
+                            lastMessageIds.set(username, data.last_message_id);
+                            updateChatWindow(username, data.messages, true);
                             
-                            try {
-                                const msgResponse = await fetch(`/get-private-messages?username=${encodeURIComponent(user.username)}`);
-                                const data = await msgResponse.json();
-                                
-                                if (data.success) {
-                                    const previousCount = lastMessageCounts.get(user.username) || 0;
-                                    const currentCount = data.messages.length;
-                                    
-                                    if (currentCount > previousCount) {
-                                        lastMessageCounts.set(user.username, currentCount);
-                                        
-                                        if (!activePrivateChats.has(user.username)) {
-                                            // Open new minimized chat with notification
-                                            openPrivateChat(user.username, true);
-                                        } else {
-                                            const chatWindow = activePrivateChats.get(user.username);
-                                            if (chatWindow.classList.contains('minimized')) {
-                                                const header = chatWindow.querySelector('.chat-window-header');
-                                                header.classList.add('has-notification');
-                                            }
-                                        }
-                                    }
-
-                                    // Update existing chat window if open
-                                    if (activePrivateChats.has(user.username)) {
-                                        const chatWindow = activePrivateChats.get(user.username);
-                                        const messagesContainer = document.getElementById(`private-messages-${user.username}`);
-                                        if (!messagesContainer) continue;
-
-                                        // Clear and repopulate messages
-                                        messagesContainer.innerHTML = '';
-                                        
-                                        data.messages.forEach(msg => {
-                                            const messageDiv = document.createElement('div');
-                                            messageDiv.className = `flex ${msg.isOutgoing ? 'justify-end' : 'justify-start'} mb-2`;
-                                            messageDiv.innerHTML = `
-                                                <div class="${msg.isOutgoing ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-800'} rounded-lg px-3 py-2 max-w-[70%]">
-                                                    <p class="text-sm">${msg.content}</p>
-                                                    <div class="flex justify-between items-center mt-1">
-                                                        <span class="text-xs ${msg.isOutgoing ? 'text-blue-100' : 'text-gray-500'}">${msg.sender}</span>
-                                                        <span class="text-xs ${msg.isOutgoing ? 'text-blue-100' : 'text-gray-500'} message-timestamp ml-2" 
-                                                              data-timestamp="${msg.timestamp}">${formatTimeAgo(msg.timestamp)}</span>
-                                                    </div>
-                                                </div>
-                                            `;
-                                            messagesContainer.appendChild(messageDiv);
-                                        });
-
-                                        // Scroll to bottom if chat is not minimized
-                                        if (!chatWindow.classList.contains('minimized')) {
-                                            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                                        }
-                                    }
-                                }
-                            } catch (error) {
-                                console.error(`Error polling messages for ${user.username}:`, error);
+                            const chatWindow = activePrivateChats.get(username);
+                            if (chatWindow && chatWindow.classList.contains('minimized')) {
+                                const header = chatWindow.querySelector('.chat-window-header');
+                                header.classList.add('has-notification');
                             }
                         }
                     }
                 } catch (error) {
                     console.error('Error in message polling:', error);
+                } finally {
+                    pollInProgress = false;
                 }
-            }, 1000);
+            }
+
+            // Function to update chat window with new messages
+            function updateChatWindow(username, messages, appendOnly = false) {
+                const chatWindow = activePrivateChats.get(username);
+                const messagesContainer = document.getElementById(`private-messages-${username}`);
+                if (!messagesContainer) return;
+
+                if (!appendOnly) {
+                    messagesContainer.innerHTML = '';
+                }
+                
+                const fragment = document.createDocumentFragment();
+                messages.forEach(msg => {
+                    const messageDiv = document.createElement('div');
+                    messageDiv.className = `flex ${msg.isOutgoing ? 'justify-end' : 'justify-start'} mb-2`;
+                    messageDiv.innerHTML = `
+                        <div class="${msg.isOutgoing ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-800'} rounded-lg px-3 py-2 max-w-[70%]">
+                            <p class="text-sm">${msg.content}</p>
+                            <div class="flex justify-between items-center mt-1">
+                                <span class="text-xs ${msg.isOutgoing ? 'text-blue-100' : 'text-gray-500'}">${msg.sender}</span>
+                                <span class="text-xs ${msg.isOutgoing ? 'text-blue-100' : 'text-gray-500'} message-timestamp ml-2" 
+                                      data-timestamp="${msg.timestamp}">${formatTimeAgo(msg.timestamp)}</span>
+                            </div>
+                        </div>
+                    `;
+                    fragment.appendChild(messageDiv);
+                });
+
+                if (appendOnly) {
+                    messagesContainer.appendChild(fragment);
+                } else {
+                    messagesContainer.innerHTML = '';
+                    messagesContainer.appendChild(fragment);
+                }
+
+                // Scroll to bottom if chat is not minimized
+                if (!chatWindow.classList.contains('minimized')) {
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                }
+            }
+
+            // Poll more frequently (every 300ms)
+            setInterval(pollMessages, 300);
         }
 
         // Add back the sendPrivateMessageButton function

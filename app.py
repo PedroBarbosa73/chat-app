@@ -48,11 +48,12 @@ logger.debug(f"Database URL (without password): {connection_string.replace(conne
 # Format connection string for SQL Server with proper encoding and timeout settings
 try:
     if 'WEBSITE_SITE_NAME' in os.environ:  # Check if running on Azure
-        # Azure-specific connection string modifications
+        # Azure-specific connection string modifications with connection pooling
         connection_string = connection_string.replace('ODBC+Driver+18+for+SQL+Server', 'ODBC+Driver+17+for+SQL+Server')
+        connection_string += '?connection_timeout=30&command_timeout=30&pool_size=20&pool_timeout=30'
     else:
         # Local development connection string modifications
-        connection_string = connection_string.replace('?', '?TrustServerCertificate=yes&connect_timeout=30&timeout=30&')
+        connection_string = connection_string.replace('?', '?TrustServerCertificate=yes&connection_timeout=30&command_timeout=30&pool_size=20&pool_timeout=30&')
     
     logger.info("Database connection string configured successfully")
 except Exception as e:
@@ -65,6 +66,13 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JSON_AS_ASCII'] = False
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=31)  # Session lasts for 31 days
 app.config['SESSION_REFRESH_EACH_REQUEST'] = True  # Refresh session on each request
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_size': 20,
+    'pool_timeout': 30,
+    'pool_recycle': 1800,
+    'max_overflow': 10
+}
+app.config['SQLALCHEMY_POOL_PRE_PING'] = True  # Enable connection testing before use
 db = SQLAlchemy(app)
 
 # Make session permanent by default
@@ -784,6 +792,57 @@ def get_users():
             'error': 'Server error'
         }), 500
 
+@app.route('/get-private-messages', methods=['GET'])
+def get_private_messages():
+    if 'username' not in session:
+        return jsonify({'success': False, 'message': 'Not authenticated'})
+    
+    current_user = session['username']
+    chat_with = request.args.get('username')
+    last_message_id = request.args.get('last_message_id', type=int, default=0)
+    
+    if not chat_with:
+        return jsonify({'success': False, 'message': 'Target username is required'})
+    
+    try:
+        # Use SQLAlchemy's connection pool instead of creating new connections
+        result = db.session.execute(
+            text("""
+                SELECT id, sender_username, receiver_username, content, created_at
+                FROM private_messages WITH (NOLOCK)
+                WHERE ((sender_username = :user1 AND receiver_username = :user2)
+                OR (sender_username = :user2 AND receiver_username = :user1))
+                AND id > :last_id
+                ORDER BY created_at ASC
+            """),
+            {
+                "user1": current_user,
+                "user2": chat_with,
+                "last_id": last_message_id
+            }
+        ).fetchall()
+        
+        messages = [{
+            'id': row[0],
+            'sender': row[1],
+            'receiver': row[2],
+            'content': row[3],
+            'timestamp': row[4].isoformat(),
+            'isOutgoing': row[1] == current_user
+        } for row in result]
+        
+        last_id = max([msg['id'] for msg in messages]) if messages else last_message_id
+        
+        return jsonify({
+            'success': True,
+            'messages': messages,
+            'last_message_id': last_id
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting private messages: {str(e)}")
+        return jsonify({'success': False, 'message': 'Server error'})
+
 @app.route('/send-private-message', methods=['POST'])
 def send_private_message():
     if 'username' not in session:
@@ -798,81 +857,37 @@ def send_private_message():
         return jsonify({'success': False, 'message': 'Missing required fields'})
     
     try:
-        with db.engine.connect() as connection:
-            # Check if target user exists
-            result = connection.execute(
-                text("SELECT id FROM users WHERE username = :username"),
-                {"username": target_username}
-            ).fetchone()
-            
-            if not result:
-                return jsonify({'success': False, 'message': 'User not found'})
-            
-            # Store private message in database
-            connection.execute(
-                text("""
+        # Use a single query to check user and insert message
+        result = db.session.execute(
+            text("""
+                IF EXISTS (SELECT 1 FROM users WHERE username = :target_username)
+                BEGIN
                     INSERT INTO private_messages (sender_username, receiver_username, content)
-                    VALUES (:sender, :receiver, :content)
-                """),
-                {
-                    "sender": sender,
-                    "receiver": target_username,
-                    "content": message
-                }
-            )
-            connection.commit()
-            
-            return jsonify({'success': True})
-            
+                    OUTPUT INSERTED.id, INSERTED.created_at
+                    VALUES (:sender, :target_username, :content)
+                END
+            """),
+            {
+                "sender": sender,
+                "target_username": target_username,
+                "content": message
+            }
+        ).fetchone()
+        
+        if not result:
+            return jsonify({'success': False, 'message': 'User not found'})
+        
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message_id': result[0],
+            'timestamp': result[1].isoformat()
+        })
+        
     except Exception as e:
         logger.error(f"Error sending private message: {str(e)}")
-        return jsonify({'success': False, 'message': 'Server error'})
-
-@app.route('/get-private-messages', methods=['GET'])
-def get_private_messages():
-    if 'username' not in session:
-        return jsonify({'success': False, 'message': 'Not authenticated'})
-    
-    current_user = session['username']
-    chat_with = request.args.get('username')
-    
-    if not chat_with:
-        return jsonify({'success': False, 'message': 'Target username is required'})
-    
-    try:
-        with db.engine.connect() as connection:
-            # Get messages where current user is either sender or receiver
-            result = connection.execute(
-                text("""
-                    SELECT sender_username, receiver_username, content, created_at
-                    FROM private_messages
-                    WHERE (sender_username = :user1 AND receiver_username = :user2)
-                    OR (sender_username = :user2 AND receiver_username = :user1)
-                    ORDER BY created_at ASC
-                """),
-                {
-                    "user1": current_user,
-                    "user2": chat_with
-                }
-            ).fetchall()
-            
-            messages = []
-            for row in result:
-                messages.append({
-                    'sender': row[0],
-                    'receiver': row[1],
-                    'content': row[2],
-                    'timestamp': row[3].isoformat(),
-                    'isOutgoing': row[0] == current_user
-                })
-            
-            return jsonify({
-                'success': True,
-                'messages': messages
-            })
-            
-    except Exception as e:
-        logger.error(f"Error getting private messages: {str(e)}")
+        db.session.rollback()
         return jsonify({'success': False, 'message': 'Server error'})
 
 if __name__ == '__main__':
