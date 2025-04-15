@@ -44,6 +44,7 @@
         let currentPage = 1;
         let isLoadingMessages = false;
         let hasMoreMessages = true;
+        let isLoadingFavorites = false;
 
         function refreshMessages(loadMore = false) {
             if (!currentRoomId || isLoadingMessages) return;
@@ -252,78 +253,73 @@
             return !roomId || authorizedRooms.includes(roomId);
         }
 
-        // Refresh messages every 1 second
-        setInterval(refreshMessages, 1000);
-
-        // Save username to localStorage
-        function saveUsername() {
-            const username = document.getElementById('username').value;
-            if (username) {
-                localStorage.setItem('chatUsername', username);
-            }
-        }
-
-        // Load saved username
-        document.addEventListener('DOMContentLoaded', () => {
-            const savedUsername = localStorage.getItem('chatUsername');
-            if (savedUsername) {
-                document.getElementById('username').value = savedUsername;
-            }
-            // Hide message form initially
-            document.getElementById('message-form').style.display = 'none';
-        });
-
-        // Add this function to handle message sending
-        function sendMessage() {
-            const message = document.getElementById('message').value;
-            const roomId = document.getElementById('room_id').value;
-            const username = '{{ session["username"] }}';
-
-            if (!message.trim()) return;
-
-            fetch('/create', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                body: `message=${encodeURIComponent(message)}&room_id=${roomId}&username=${encodeURIComponent(username)}`
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    // Clear the message input
-                    document.getElementById('message').value = '';
-                    // Refresh messages to show the new one
-                    refreshMessages();
-                } else {
-                    alert(data.message || 'Error sending message');
-                }
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                alert('Error sending message');
-            });
-        }
-
-        // Add event listener for Enter key in message input
-        document.getElementById('message').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
-        });
-
-        function updateStarIcons(roomId, isFavorite) {
-            // Update all star icons for this room (both in available rooms and favorites)
-            document.querySelectorAll(`[data-room-id="${roomId}"] .favorite-star`).forEach(starIcon => {
-                if (isFavorite) {
-                    starIcon.classList.remove('far');
-                    starIcon.classList.add('fas');
-                } else {
-                    starIcon.classList.remove('fas');
-                    starIcon.classList.add('far');
+        // Initialize favorites on page load
+        function initializeFavorites() {
+            // First, set up the initial favorites from the server-side data
+            const favoritesList = document.getElementById('favorites-list');
+            favoritesList.innerHTML = ''; // Clear the list first
+            
+            favoriteRoomIds.forEach(roomId => {
+                const roomElement = document.querySelector(`[data-room-id="${roomId}"]`);
+                if (roomElement) {
+                    const favoriteRoom = roomElement.cloneNode(true);
+                    favoriteRoom.classList.add('favorite-item');
+                    favoritesList.appendChild(favoriteRoom);
+                    updateStarIcons(roomId, true);
                 }
             });
+            updateFavoritesCount();
+        }
+
+        // Load favorites from server
+        function loadFavorites() {
+            if (isLoadingFavorites) return;
+            isLoadingFavorites = true;
+
+            fetch('/favorite-rooms')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        try {
+                            // Update the favoriteRoomIds array
+                            favoriteRoomIds = data.favorites.map(favorite => favorite.room_id);
+                            
+                            // Update the favorites list
+                            const favoritesList = document.getElementById('favorites-list');
+                            if (!favoritesList) return;
+                            
+                            favoritesList.innerHTML = ''; // Clear the list
+                            
+                            // Add each favorite room
+                            data.favorites.forEach(favorite => {
+                                const roomElement = document.querySelector(`[data-room-id="${favorite.room_id}"]`);
+                                if (roomElement) {
+                                    const favoriteRoom = roomElement.cloneNode(true);
+                                    favoriteRoom.classList.add('favorite-item');
+                                    favoritesList.appendChild(favoriteRoom);
+                                    updateStarIcons(favorite.room_id, true);
+                                }
+                            });
+                            
+                            updateFavoritesCount();
+                        } catch (err) {
+                            console.error('Error processing favorites:', err);
+                            throw err;
+                        }
+                    } else {
+                        throw new Error(data.message || 'Failed to load favorites');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error in loadFavorites:', error);
+                    const favoritesList = document.getElementById('favorites-list');
+                    if (favoritesList) {
+                        favoritesList.innerHTML = '<div class="text-red-500 text-center py-4">Error loading favorites. Please try again.</div>';
+                    }
+                })
+                .finally(() => {
+                    isLoadingFavorites = false;
+                });
         }
 
         function toggleFavorite(roomId, event) {
@@ -344,10 +340,15 @@
 
                     if (data.is_favorite) {
                         favoriteRoomIds.push(roomId);
-                        addToFavorites(roomId);
                     } else {
                         favoriteRoomIds = favoriteRoomIds.filter(id => id !== roomId);
-                        removeFromFavorites(roomId);
+                    }
+                    
+                    // Force reload of favorites list
+                    const favoritesList = document.getElementById('favorites-list');
+                    if (!favoritesList.classList.contains('hidden')) {
+                        toggleFavoritesDropdown(); // Close
+                        toggleFavoritesDropdown(); // Open to reload
                     }
                 } else {
                     alert(data.message || 'Error updating favorite status');
@@ -355,43 +356,168 @@
             });
         }
 
-        function addToFavorites(roomId) {
-            const roomElement = document.querySelector(`[data-room-id="${roomId}"]`);
-            const favoritesList = document.getElementById('favorites-list');
-            
-            // Check if room is already in favorites
-            if (!document.querySelector(`#favorites-list [data-room-id="${roomId}"]`)) {
-                const favoriteRoom = roomElement.cloneNode(true);
-                favoriteRoom.classList.add('favorite-item');
-                favoritesList.appendChild(favoriteRoom);
-                updateFavoritesCount();
-            }
-        }
-
-        function removeFromFavorites(roomId) {
-            const favoriteRoom = document.querySelector(`#favorites-list [data-room-id="${roomId}"]`);
-            if (favoriteRoom) {
-                favoriteRoom.remove();
-                updateFavoritesCount();
-            }
+        function updateStarIcons(roomId, isFavorite) {
+            // Update all star icons for this room (both in available rooms and favorites)
+            document.querySelectorAll(`[data-room-id="${roomId}"] .favorite-star`).forEach(starIcon => {
+                if (isFavorite) {
+                    starIcon.classList.remove('far');
+                    starIcon.classList.add('fas');
+                } else {
+                    starIcon.classList.remove('fas');
+                    starIcon.classList.add('far');
+                }
+            });
         }
 
         function updateFavoritesCount() {
-            const count = document.querySelectorAll('#favorites-list .room-item').length;
-            document.getElementById('favorites-count').textContent = count;
+            const favoritesCount = document.getElementById('favorites-count');
+            if (favoritesCount) {
+                const count = document.querySelectorAll('#favorites-list .room-item').length;
+                favoritesCount.textContent = count;
+            }
         }
 
-        document.addEventListener('DOMContentLoaded', () => {
-            // Initialize favorites
-            favoriteRoomIds.forEach(roomId => {
-                addToFavorites(roomId);
-            });
-            updateFavoritesCount();
+        function toggleFavoritesDropdown() {
+            const favoritesList = document.getElementById('favorites-list');
+            const toggleButton = document.getElementById('toggle-favorites');
+            
+            if (favoritesList.classList.contains('hidden')) {
+                // Show loading state
+                favoritesList.innerHTML = '<div class="text-gray-500 text-center py-4">Loading favorites...</div>';
+                favoritesList.classList.remove('hidden');
+                toggleButton.innerHTML = '<i class="fas fa-chevron-up"></i>';
+                
+                // Fetch favorites
+                fetch('/favorite-rooms')
+                    .then(response => response.json())
+                    .then(data => {
+                        console.log('Favorites data:', data);
+                        favoritesList.innerHTML = ''; // Clear loading message
+                        
+                        if (data.success) {
+                            if (!data.favorites || data.favorites.length === 0) {
+                                favoritesList.innerHTML = '<div class="text-gray-500 text-center py-4">No favorite rooms yet</div>';
+                            } else {
+                                data.favorites.forEach(favorite => {
+                                    const roomDiv = document.createElement('div');
+                                    roomDiv.className = 'room-item cursor-pointer bg-gray-50 p-4 rounded-lg hover:bg-gray-100 transition-colors duration-200 mb-2';
+                                    roomDiv.setAttribute('data-room-id', favorite.room_id);
+                                    roomDiv.onclick = () => selectRoom(favorite.room_id, favorite.room.is_private);
+                                    
+                                    roomDiv.innerHTML = `
+                                        <div class="flex justify-between items-start">
+                                            <h3 class="font-medium text-gray-800">${favorite.room_name}</h3>
+                                            <i class="favorite-star cursor-pointer fas fa-star text-yellow-400"
+                                               onclick="toggleFavorite(${favorite.room_id}, event)"></i>
+                                        </div>
+                                        <div class="flex items-center mt-2">
+                                            <span class="text-xs ${favorite.room.is_private ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'} px-2 py-1 rounded">
+                                                ${favorite.room.is_private ? 'Private' : 'Public'}
+                                            </span>
+                                            <span class="text-xs text-gray-500 ml-2">
+                                                Created ${new Date(favorite.room.created_at).toLocaleString()}
+                                            </span>
+                                        </div>
+                                    `;
+                                    
+                                    favoritesList.appendChild(roomDiv);
+                                });
+                            }
+                            // Update the favoriteRoomIds array
+                            favoriteRoomIds = data.favorites.map(favorite => favorite.room_id);
+                        } else {
+                            favoritesList.innerHTML = '<div class="text-red-500 text-center py-4">Error loading favorites. Please try again.</div>';
+                        }
+                        updateFavoritesCount();
+                    })
+                    .catch(error => {
+                        console.error('Error loading favorites:', error);
+                        favoritesList.innerHTML = '<div class="text-red-500 text-center py-4">Error loading favorites. Please try again.</div>';
+                    });
+            } else {
+                favoritesList.classList.add('hidden');
+                toggleButton.innerHTML = '<i class="fas fa-chevron-down"></i>';
+            }
+        }
 
-            // Add scroll event listener to message list
+        // Initialize everything when the DOM is loaded
+        document.addEventListener('DOMContentLoaded', () => {
+            // Initialize message form
+            const messageForm = document.getElementById('message-form');
+            if (messageForm) {
+                messageForm.style.display = 'none';
+            }
+            
+            // Initialize message input event listener
+            const messageInput = document.getElementById('message');
+            if (messageInput) {
+                messageInput.addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        sendMessage();
+                    }
+                });
+            }
+            
+            // Initialize favorites dropdown
+            const toggleFavoritesBtn = document.getElementById('toggle-favorites');
+            if (toggleFavoritesBtn) {
+                toggleFavoritesBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    toggleFavoritesDropdown();
+                });
+            }
+            
+            // Initialize message list scroll handler
             const messageList = document.getElementById('message-list');
-            messageList.addEventListener('scroll', handleMessageListScroll);
+            if (messageList) {
+                messageList.addEventListener('scroll', handleMessageListScroll);
+            }
+            
+            // Load saved username if exists
+            const usernameInput = document.getElementById('username');
+            const savedUsername = localStorage.getItem('chatUsername');
+            if (usernameInput && savedUsername) {
+                usernameInput.value = savedUsername;
+            }
+
+            // Load favorites initially
+            loadFavorites();
         });
+
+        function sendMessage() {
+            const messageInput = document.getElementById('message');
+            const roomIdInput = document.getElementById('room_id');
+            
+            if (!messageInput || !roomIdInput) return;
+            
+            const message = messageInput.value;
+            const roomId = roomIdInput.value;
+            const username = '{{ session["username"] }}';
+
+            if (!message.trim()) return;
+
+            fetch('/create', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `message=${encodeURIComponent(message)}&room_id=${roomId}&username=${encodeURIComponent(username)}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    messageInput.value = '';
+                    refreshMessages();
+                } else {
+                    alert(data.message || 'Error sending message');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error sending message');
+            });
+        }
     </script>
 </head>
 <body class="bg-gray-100 min-h-screen">
@@ -399,11 +525,13 @@
         <!-- Left Sidebar - Favorites -->
         <div class="left-sidebar">
             <div class="sidebar-box">
-                <div class="flex justify-between items-center mb-4">
+                <div class="flex justify-between items-center mb-4 cursor-pointer" onclick="toggleFavoritesDropdown()">
                     <h2 class="text-xl font-semibold text-gray-800">Favorite Rooms</h2>
-                    <span class="text-sm text-gray-500"><span id="favorites-count">0</span> rooms</span>
+                    <button type="button" id="toggle-favorites" class="text-gray-500 hover:text-gray-700">
+                        <i class="fas fa-chevron-down"></i>
+                    </button>
                 </div>
-                <div id="favorites-list" class="space-y-2">
+                <div id="favorites-list" class="space-y-2 hidden">
                     <!-- Favorite rooms will be added here dynamically -->
                 </div>
             </div>
