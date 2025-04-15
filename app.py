@@ -179,23 +179,55 @@ class FavoriteRoom(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
-# Initialize Azure Blob Storage
-try:
-    blob_service_client = BlobServiceClient.from_connection_string(os.getenv('AZURE_STORAGE_CONNECTION_STRING'))
-    container_name = "chat-media"
+# Global variables for blob storage
+blob_service_client = None
+container_client = None
+
+def initialize_blob_storage():
+    global blob_service_client, container_client
+    max_retries = 3
+    retry_count = 0
     
-    # Create container if it doesn't exist
-    try:
-        container_client = blob_service_client.get_container_client(container_name)
-        container_client.get_container_properties()
-        logger.info(f"Container '{container_name}' already exists")
-    except Exception as e:
-        logger.info(f"Container '{container_name}' does not exist, creating it...")
-        container_client = blob_service_client.create_container(container_name)
-        logger.info(f"Container '{container_name}' created successfully")
-except Exception as e:
-    logger.error(f"Error initializing Azure Blob Storage: {str(e)}")
-    raise
+    while retry_count < max_retries:
+        try:
+            logger.info("Initializing Azure Blob Storage...")
+            connection_string = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
+            if not connection_string:
+                raise ValueError("AZURE_STORAGE_CONNECTION_STRING not found in environment variables")
+            
+            blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+            container_name = "chat-media"
+            
+            # Create container if it doesn't exist
+            container_client = blob_service_client.get_container_client(container_name)
+            try:
+                container_client.get_container_properties()
+                logger.info(f"Container '{container_name}' exists and is accessible")
+                return True
+            except Exception as container_error:
+                logger.warning(f"Container '{container_name}' does not exist, creating it... Error: {str(container_error)}")
+                container_client = blob_service_client.create_container(container_name)
+                logger.info(f"Container '{container_name}' created successfully")
+                return True
+                
+        except Exception as e:
+            retry_count += 1
+            logger.error(f"Error initializing Azure Blob Storage (attempt {retry_count}/{max_retries}): {str(e)}")
+            if retry_count == max_retries:
+                logger.error("Failed to initialize blob storage after maximum retries")
+                return False
+            time.sleep(1)  # Wait before retrying
+
+@app.before_first_request
+def setup_storage():
+    if not initialize_blob_storage():
+        logger.error("Failed to initialize blob storage")
+        
+def ensure_blob_storage():
+    global blob_service_client, container_client
+    if blob_service_client is None or container_client is None:
+        return initialize_blob_storage()
+    return True
 
 def generate_sas_token(blob_name):
     """Generate a SAS token for a blob"""
@@ -608,6 +640,10 @@ def upload_media():
         return jsonify({'success': False, 'message': 'Please login first'})
     
     try:
+        # Ensure blob storage is initialized
+        if not ensure_blob_storage():
+            return jsonify({'success': False, 'message': 'Storage service unavailable'})
+            
         if 'file' not in request.files:
             return jsonify({'success': False, 'message': 'No file provided'})
         
@@ -624,27 +660,40 @@ def upload_media():
         file_extension = os.path.splitext(file.filename)[1]
         unique_filename = f"{secrets.token_urlsafe(16)}{file_extension}"
         
-        # Upload to Azure Blob Storage
-        blob_client = container_client.get_blob_client(unique_filename)
-        blob_client.upload_blob(file)
+        logger.info(f"Attempting to upload file {file.filename} as {unique_filename}")
         
-        # Generate SAS token for the blob
-        sas_token = generate_sas_token(unique_filename)
-        
-        # Get the URL of the uploaded file with SAS token
-        media_url = f"{blob_client.url}?{sas_token}"
-        
-        return jsonify({
-            'success': True,
-            'media_url': media_url,
-            'media_type': 'image' if content_type.startswith('image/') else 'video',
-            'filename': file.filename,
-            'unique_filename': unique_filename
-        })
-        
+        # Upload to Azure Blob Storage with retry
+        max_retries = 3
+        retry_count = 0
+        while retry_count < max_retries:
+            try:
+                blob_client = container_client.get_blob_client(unique_filename)
+                blob_client.upload_blob(file)
+                logger.info(f"File uploaded successfully: {unique_filename}")
+                
+                # Generate SAS token for the blob
+                sas_token = generate_sas_token(unique_filename)
+                
+                # Get the URL of the uploaded file with SAS token
+                media_url = f"{blob_client.url}?{sas_token}"
+                
+                return jsonify({
+                    'success': True,
+                    'media_url': media_url,
+                    'media_type': 'image' if content_type.startswith('image/') else 'video',
+                    'filename': file.filename,
+                    'unique_filename': unique_filename
+                })
+            except Exception as e:
+                retry_count += 1
+                logger.error(f"Error uploading file (attempt {retry_count}/{max_retries}): {str(e)}")
+                if retry_count == max_retries:
+                    return jsonify({'success': False, 'message': 'Error uploading file after multiple attempts'})
+                time.sleep(1)
+                
     except Exception as e:
-        logger.error(f"Error uploading media: {str(e)}")
-        return jsonify({'success': False, 'message': 'Error uploading file'})
+        logger.error(f"Error in upload_media route: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error processing upload request'})
 
 if __name__ == '__main__':
     try:
