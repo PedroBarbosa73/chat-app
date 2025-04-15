@@ -83,8 +83,9 @@ def before_first_request():
     global _is_first_request
     if _is_first_request:
         _is_first_request = False
-        # Put your initialization code here
-        create_table()
+        # Create all database tables
+        db.create_all()
+        logger.info("Database tables created successfully")
 
 # Make session permanent by default
 @app.before_request
