@@ -1438,8 +1438,9 @@
                 if (data.success) {
                     const timestamp = new Date().toISOString();
                     appendPrivateMessage(targetUsername, '{{ session["username"] }}', message, true);
-                    // Update the last message timestamp
+                    // Update the last message timestamp with the current time
                     lastMessageTimestamps.set(targetUsername, new Date(timestamp).getTime());
+                    console.log(`Updated lastMessageTimestamps for ${targetUsername} after sending:`, new Date(timestamp).getTime());
                 } else {
                     alert(data.message || 'Failed to send message');
                 }
