@@ -20,6 +20,7 @@
             padding-left: 0;
             margin-left: 0;
             flex-shrink: 0;
+            transition: transform 0.3s ease;
         }
         .right-sidebar {
             width: 250px;
@@ -36,6 +37,41 @@
             border-radius: 0.5rem;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
             padding: 1rem;
+        }
+        
+        /* New styles for room switching */
+        .room-view {
+            display: none;
+        }
+        .room-view.active {
+            display: block;
+        }
+        .back-button {
+            position: fixed;
+            top: 1rem;
+            left: 1rem;
+            background: white;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            cursor: pointer;
+            z-index: 100;
+        }
+        .back-button:hover {
+            background: #f3f4f6;
+        }
+        .chat-container {
+            transition: margin-left 0.3s ease;
+        }
+        .chat-container.expanded {
+            margin-left: 0;
+        }
+        .chat-container.collapsed {
+            margin-left: -250px;
         }
         
         /* Lightbox styles */
@@ -80,23 +116,67 @@
         let hasMoreMessages = true;
         let isLoadingFavorites = false;
         let currentMediaFile = null;
+        let authorizedRooms = {{ authorized_rooms|tojson }};
+
+        function scrollToBottom(messageList, attempts = 0) {
+            const maxAttempts = 3;
+            const scrollHeight = messageList.scrollHeight;
+            messageList.scrollTop = scrollHeight;
+            
+            // Check if we actually reached the bottom
+            if (messageList.scrollTop + messageList.clientHeight < scrollHeight - 10) { // 10px threshold
+                if (attempts < maxAttempts) {
+                    // Try again after a longer delay
+                    setTimeout(() => {
+                        scrollToBottom(messageList, attempts + 1);
+                    }, 200 * (attempts + 1)); // Increasing delays: 200ms, 400ms, 600ms
+                }
+            }
+        }
+
+        function forceScrollToBottom(messageList) {
+            // Force scroll in multiple ways
+            messageList.scrollTop = Number.MAX_SAFE_INTEGER;
+            messageList.scrollTo(0, Number.MAX_SAFE_INTEGER);
+            messageList.scrollIntoView(false);
+            
+            // Also scroll after a delay to handle dynamic content
+            setTimeout(() => {
+                messageList.scrollTop = Number.MAX_SAFE_INTEGER;
+                messageList.scrollTo(0, Number.MAX_SAFE_INTEGER);
+            }, 100);
+            
+            // And again after a longer delay
+            setTimeout(() => {
+                messageList.scrollTop = Number.MAX_SAFE_INTEGER;
+                messageList.scrollTo(0, Number.MAX_SAFE_INTEGER);
+            }, 500);
+        }
 
         function refreshMessages(loadMore = false) {
-            if (!currentRoomId || isLoadingMessages) return;
+            if (!currentRoomId || isLoadingMessages) {
+                console.log('Skipping refreshMessages:', { currentRoomId, isLoadingMessages });
+                return;
+            }
 
-            if (loadMore && !hasMoreMessages) return;
+            if (loadMore && !hasMoreMessages) {
+                console.log('No more messages to load');
+                return;
+            }
 
             const page = loadMore ? currentPage + 1 : 1;
             isLoadingMessages = true;
+            console.log('Fetching messages:', { roomId: currentRoomId, page });
 
             fetch(`/messages?room_id=${currentRoomId}&page=${page}`)
                 .then(response => response.json())
                 .then(data => {
+                    console.log('Messages response:', data);
                     const messageForm = document.getElementById('message-form');
+                    const messageList = document.getElementById('message-list');
                     
                     if (data.error) {
-                        // Handle unauthorized access
-                        document.getElementById('message-list').innerHTML = `
+                        messageList.innerHTML = `
                             <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
                                 ${data.error}
                             </div>
@@ -107,14 +187,10 @@
                     }
 
                     console.log('Messages fetched successfully');
-                    // Show message form on successful fetch
                     messageForm.style.display = 'block';
                     messageForm.style.visibility = 'visible';
                     messageForm.style.opacity = '1';
-
-                    const messageList = document.getElementById('message-list');
                     
-                    // If loading more messages, append them; otherwise, clear the list
                     if (!loadMore) {
                         messageList.innerHTML = '';
                         currentPage = 1;
@@ -122,10 +198,10 @@
                         currentPage = page;
                     }
 
-                    // Update scroll state
                     hasMoreMessages = data.has_next;
+                    let imagesLoaded = 0;
+                    let totalImages = 0;
                     
-                    // Add messages to the list
                     data.messages.forEach(msg => {
                         const messageDiv = document.createElement('div');
                         messageDiv.className = 'bg-white p-4 rounded-lg shadow mb-4';
@@ -133,6 +209,7 @@
                         let mediaContent = '';
                         if (msg.has_media) {
                             if (msg.media_type === 'image') {
+                                totalImages++;
                                 mediaContent = `
                                     <div class="mt-2">
                                         <img src="${msg.media_url}" 
@@ -140,6 +217,7 @@
                                              class="max-w-full rounded-lg max-h-96 object-contain cursor-pointer" 
                                              onclick="openLightbox('${msg.media_url}')"
                                              style="transition: transform 0.2s;"
+                                             onload="if(!${loadMore}){imagesLoaded++;if(imagesLoaded===${totalImages}){forceScrollToBottom(document.getElementById('message-list'))}}"
                                              onmouseover="this.style.transform='scale(1.02)'"
                                              onmouseout="this.style.transform='scale(1)'">
                                     </div>
@@ -165,16 +243,21 @@
                             ${mediaContent}
                         `;
                         
-                        // Always append messages to maintain chronological order
                         messageList.appendChild(messageDiv);
                     });
 
-                    // Always scroll to bottom when loading initial messages
                     if (!loadMore) {
-                        messageList.scrollTop = messageList.scrollHeight;
+                        forceScrollToBottom(messageList);
+                        // If no images, we still want to scroll
+                        if (totalImages === 0) {
+                            setTimeout(() => forceScrollToBottom(messageList), 100);
+                        }
+                    } else {
+                        const oldScrollHeight = messageList.scrollHeight;
+                        const oldScrollTop = messageList.scrollTop;
+                        messageList.scrollTop = oldScrollTop + (messageList.scrollHeight - oldScrollHeight);
                     }
 
-                    // Show message form if we successfully got messages
                     messageForm.style.display = 'block';
                     messageForm.style.visibility = 'visible';
                     messageForm.style.opacity = '1';
@@ -195,16 +278,29 @@
         }
 
         function selectRoom(roomId, isPrivate) {
-            if (isPrivate && !isRoomAuthorized(roomId)) {
-                showJoinRoomModal(roomId);
-                return;
+            console.log('selectRoom called with:', {roomId, isPrivate});
+            roomId = parseInt(roomId);
+            
+            if (isPrivate) {
+                if (!isRoomAuthorized(roomId)) {
+                    console.log('Room is private and not authorized, showing join modal');
+                    showJoinRoomModal(roomId);
+                    return;
+                }
             }
 
-            console.log('Selecting room:', roomId);
+            // Set current room and reset page
             currentRoomId = roomId;
             currentPage = 1;
             hasMoreMessages = true;
-            document.getElementById('room_id').value = roomId;
+            
+            // Set room_id input value with error handling
+            const roomIdInput = document.getElementById('room_id');
+            if (roomIdInput) {
+                roomIdInput.value = roomId;
+            } else {
+                console.error('room_id input element not found');
+            }
             
             // Update active room styling
             document.querySelectorAll('.room-item').forEach(item => {
@@ -221,32 +317,49 @@
                 const roomName = selectedRoom.querySelector('h3').textContent;
                 const isPrivateRoom = selectedRoom.querySelector('.bg-yellow-100') !== null;
                 
-                // Update room header
-                document.getElementById('current-room-name').textContent = roomName;
-                document.getElementById('room-status').textContent = isPrivateRoom ? 'Private Room' : 'Public Room';
+                const roomNameElement = document.getElementById('current-room-name');
+                const roomStatusElement = document.getElementById('room-status');
+                
+                if (roomNameElement) roomNameElement.textContent = roomName;
+                if (roomStatusElement) roomStatusElement.textContent = isPrivateRoom ? 'Private Room' : 'Public Room';
             }
 
-            // Show chat area and message form
+            // Switch views - hide rooms list and show chat
+            const roomsView = document.getElementById('rooms-view');
             const chatArea = document.getElementById('chat-area');
-            const messageForm = document.getElementById('message-form');
+            const messageList = document.getElementById('message-list');
             
-            console.log('Displaying chat area and message form');
-            chatArea.style.display = 'flex';
-            messageForm.style.display = 'block';
-            messageForm.style.visibility = 'visible'; // Add explicit visibility
-            messageForm.style.opacity = '1'; // Ensure it's visible
-            
-            // Clear and refresh messages
-            document.getElementById('message-list').innerHTML = '';
+            if (roomsView) roomsView.style.display = 'none';
+            if (chatArea) chatArea.style.display = 'block';
+            if (messageList) {
+                messageList.innerHTML = '';
+                forceScrollToBottom(messageList);
+            }
+
             refreshMessages();
 
             // Focus on message input
             const messageInput = document.getElementById('message');
-            messageInput.style.display = 'block'; // Ensure textarea is visible
-            messageInput.focus();
+            if (messageInput) messageInput.focus();
+        }
 
-            // Scroll to chat area with smooth animation
-            chatArea.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        function goBackToRooms() {
+            // Hide chat area and show rooms view
+            const chatArea = document.getElementById('chat-area');
+            const roomsView = document.getElementById('rooms-view');
+            
+            if (chatArea) chatArea.style.display = 'none';
+            if (roomsView) roomsView.style.display = 'block';
+            
+            // Clear current room
+            currentRoomId = null;
+            const messageList = document.getElementById('message-list');
+            if (messageList) messageList.innerHTML = '';
+            
+            // Clear active room styling
+            document.querySelectorAll('.room-item').forEach(item => {
+                item.classList.remove('bg-blue-100');
+            });
         }
 
         function showJoinRoomModal(roomId) {
@@ -266,52 +379,65 @@
             const roomId = document.getElementById('join-room-id').value;
             const password = document.getElementById('join-room-password').value;
 
+            console.log('Attempting to join room:', { roomId });
+
+            const formData = new FormData();
+            formData.append('room_id', roomId);
+            formData.append('room_password', password);
+
             fetch('/join-room', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                body: `room_id=${roomId}&room_password=${password}`
+                body: formData
             })
-            .then(response => response.json())
+            .then(response => {
+                console.log('Join room response status:', response.status);
+                return response.json();
+            })
             .then(data => {
+                console.log('Join room response:', data);
                 if (data.success) {
+                    // Add the room to authorized rooms
+                    addAuthorizedRoom(data.room_id);
                     hideJoinRoomModal();
-                    // Update the room header immediately
-                    document.getElementById('current-room-name').textContent = data.room_name;
-                    document.getElementById('room-status').textContent = data.is_private ? 'Private Room' : 'Public Room';
-                    
-                    // Show the chat area
-                    document.getElementById('chat-area').style.display = 'flex';
-                    document.getElementById('message-form').style.display = 'block';
-                    
-                    // Set the current room ID and update the form
-                    currentRoomId = data.room_id;
-                    document.getElementById('room_id').value = data.room_id;
-                    
-                    // Update active room styling
-                    document.querySelectorAll('.room-item').forEach(item => {
-                        if (item.dataset.roomId === data.room_id.toString()) {
-                            item.classList.add('bg-blue-100');
-                        } else {
-                            item.classList.remove('bg-blue-100');
-                        }
-                    });
-                    
-                    // Refresh messages
-                    refreshMessages();
-                    
-                    // Focus on message input
-                    document.getElementById('message').focus();
+                    // After successful join, select the room
+                    selectRoom(data.room_id, data.is_private);
                 } else {
+                    console.error('Error joining room:', data.message);
                     alert(data.message || 'Failed to join room');
                 }
+            })
+            .catch(error => {
+                console.error('Error joining room:', error);
+                alert('Error joining room');
             });
         }
 
         function isRoomAuthorized(roomId) {
-            const authorizedRooms = {{ authorized_rooms|tojson }};
-            return !roomId || authorizedRooms.includes(roomId);
+            console.log('Checking authorization for room:', roomId);
+            console.log('Authorized rooms:', authorizedRooms);
+            
+            // Get the room element to check if it's private
+            const roomElement = document.querySelector(`[data-room-id="${roomId}"]`);
+            const isPrivate = roomElement ? roomElement.querySelector('.bg-yellow-100') !== null : false;
+            
+            // If the room is not private, always return true
+            if (!isPrivate) {
+                console.log('Room is public, authorization not required');
+                return true;
+            }
+            
+            // For private rooms, check the authorized rooms list
+            const isAuthorized = authorizedRooms.includes(parseInt(roomId));
+            console.log('Room is private, authorization status:', isAuthorized);
+            return isAuthorized;
+        }
+
+        function addAuthorizedRoom(roomId) {
+            roomId = parseInt(roomId);
+            if (!authorizedRooms.includes(roomId)) {
+                authorizedRooms.push(roomId);
+                console.log('Updated authorized rooms:', authorizedRooms);
+            }
         }
 
         // Initialize favorites on page load
@@ -538,15 +664,158 @@
             }
         }
 
+        function isAdmin() {
+            return '{{ session["username"] }}'.toLowerCase() === 'nando';
+        }
+
+        function deleteRoom(roomId, event) {
+            event.stopPropagation(); // Prevent room selection when clicking delete
+            
+            if (!isAdmin()) {
+                console.error('Unauthorized delete attempt');
+                return;
+            }
+
+            // Find all delete buttons for this room and disable them
+            const deleteButtons = document.querySelectorAll(`[data-room-id="${roomId}"] .delete-room-btn`);
+            deleteButtons.forEach(btn => {
+                btn.disabled = true;
+                btn.classList.add('opacity-50', 'cursor-not-allowed');
+            });
+
+            if (!confirm('Are you sure you want to delete this room? This action cannot be undone.')) {
+                // Re-enable buttons if user cancels
+                deleteButtons.forEach(btn => {
+                    btn.disabled = false;
+                    btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                });
+                return;
+            }
+
+            fetch(`/delete-room/${roomId}`, {
+                method: 'DELETE'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Remove all instances of the room from the DOM
+                    const roomElements = document.querySelectorAll(`[data-room-id="${roomId}"]`);
+                    roomElements.forEach(element => {
+                        // Fade out animation
+                        element.style.transition = 'opacity 0.3s ease';
+                        element.style.opacity = '0';
+                        setTimeout(() => {
+                            element.remove();
+                            // Update room count
+                            updateRoomCount();
+                        }, 300);
+                    });
+
+                    // If we're in the deleted room, go back to rooms list
+                    if (currentRoomId === roomId) {
+                        goBackToRooms();
+                    }
+
+                    // Show success message
+                    showNotification('Room deleted successfully', 'success');
+                } else {
+                    // Re-enable buttons on failure
+                    deleteButtons.forEach(btn => {
+                        btn.disabled = false;
+                        btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                    });
+                    showNotification(data.message || 'Failed to delete room', 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Error deleting room:', error);
+                // Re-enable buttons on error
+                deleteButtons.forEach(btn => {
+                    btn.disabled = false;
+                    btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                });
+                showNotification('Error deleting room', 'error');
+            });
+        }
+
+        function updateRoomCount() {
+            const roomCount = document.querySelectorAll('.available-rooms .room-item').length;
+            const roomCountElement = document.querySelector('.room-count');
+            if (roomCountElement) {
+                roomCountElement.textContent = `${roomCount} rooms total`;
+            }
+        }
+
+        function showNotification(message, type = 'success') {
+            // Remove any existing notification
+            const existingNotification = document.getElementById('notification');
+            if (existingNotification) {
+                existingNotification.remove();
+            }
+
+            // Create new notification
+            const notification = document.createElement('div');
+            notification.id = 'notification';
+            notification.className = `fixed top-4 right-4 p-4 rounded-lg shadow-lg ${
+                type === 'success' ? 'bg-green-500' : 'bg-red-500'
+            } text-white z-50 transition-opacity duration-300`;
+            notification.textContent = message;
+
+            // Add to document
+            document.body.appendChild(notification);
+
+            // Fade out and remove after 3 seconds
+            setTimeout(() => {
+                notification.style.opacity = '0';
+                setTimeout(() => notification.remove(), 300);
+            }, 3000);
+        }
+
         // Initialize everything when the DOM is loaded
         document.addEventListener('DOMContentLoaded', () => {
-            // Initialize message form
-            const messageForm = document.getElementById('message-form');
-            if (messageForm) {
-                messageForm.style.display = 'none';
+            console.log('DOM loaded, initializing handlers');
+            
+            // Add click handlers to all room items
+            document.querySelectorAll('.room-item').forEach(room => {
+                const roomId = room.dataset.roomId;
+                const isPrivate = room.querySelector('.bg-yellow-100') !== null;
+                console.log('Adding click handler to room:', {roomId, isPrivate});
+                
+                // Add delete button for admin if not already present
+                if (isAdmin() && !room.querySelector('.delete-room-btn')) {
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.className = 'delete-room-btn text-red-500 hover:text-red-700 ml-2';
+                    deleteBtn.innerHTML = '<i class="fas fa-trash"></i>';
+                    deleteBtn.onclick = (e) => deleteRoom(roomId, e);
+                    
+                    const roomHeader = room.querySelector('.flex.justify-between.items-start');
+                    roomHeader.insertBefore(deleteBtn, roomHeader.lastChild);
+                }
+                
+                room.addEventListener('click', (e) => {
+                    // Prevent if clicking on favorite star or delete button
+                    if (e.target.classList.contains('favorite-star') || 
+                        e.target.classList.contains('delete-room-btn') ||
+                        e.target.closest('.delete-room-btn')) return;
+                    
+                    console.log('Room clicked:', {roomId, isPrivate});
+                    selectRoom(parseInt(roomId), isPrivate);
+                });
+            });
+
+            // Hide chat area initially
+            const chatArea = document.getElementById('chat-area');
+            if (chatArea) {
+                chatArea.style.display = 'none';
             }
             
-            // Initialize message input event listener
+            // Show rooms view initially
+            const roomsView = document.getElementById('rooms-view');
+            if (roomsView) {
+                roomsView.style.display = 'block';
+            }
+            
+            // Initialize message input event listener for Enter key
             const messageInput = document.getElementById('message');
             if (messageInput) {
                 messageInput.addEventListener('keypress', function(e) {
@@ -557,30 +826,159 @@
                 });
             }
             
-            // Initialize favorites dropdown
-            const toggleFavoritesBtn = document.getElementById('toggle-favorites');
-            if (toggleFavoritesBtn) {
-                toggleFavoritesBtn.addEventListener('click', function(e) {
-                    e.stopPropagation();
-                    toggleFavoritesDropdown();
-                });
-            }
-            
             // Initialize message list scroll handler
             const messageList = document.getElementById('message-list');
             if (messageList) {
                 messageList.addEventListener('scroll', handleMessageListScroll);
             }
-            
-            // Load saved username if exists
-            const usernameInput = document.getElementById('username');
-            const savedUsername = localStorage.getItem('chatUsername');
-            if (usernameInput && savedUsername) {
-                usernameInput.value = savedUsername;
-            }
 
             // Load favorites initially
             loadFavorites();
+
+            // Add class to rooms container for easier selection
+            const roomsContainer = document.querySelector('.grid.grid-cols-1.md\\:grid-cols-2.gap-4');
+            if (roomsContainer) {
+                roomsContainer.classList.add('available-rooms');
+            }
+
+            // Add delete buttons to rooms if admin
+            if (isAdmin()) {
+                document.querySelectorAll('.room-item').forEach(room => {
+                    const roomId = room.dataset.roomId;
+                    if (!room.querySelector('.delete-room-btn')) {
+                        const deleteBtn = document.createElement('button');
+                        deleteBtn.className = 'delete-room-btn text-red-500 hover:text-red-700 ml-2';
+                        deleteBtn.innerHTML = '<i class="fas fa-trash"></i>';
+                        deleteBtn.onclick = (e) => deleteRoom(roomId, e);
+                        
+                        const roomHeader = room.querySelector('.flex.justify-between.items-start');
+                        roomHeader.insertBefore(deleteBtn, roomHeader.lastChild);
+                    }
+                });
+            }
+        });
+
+        async function sendMessage() {
+            console.log('sendMessage called');
+            const messageInput = document.getElementById('message');
+            const roomIdInput = document.getElementById('room_id');
+            
+            if (!messageInput || !roomIdInput) {
+                console.error('Required elements not found:', {
+                    messageInput: !!messageInput,
+                    roomIdInput: !!roomIdInput
+                });
+                return;
+            }
+            
+            const message = messageInput.value;
+            const roomId = parseInt(roomIdInput.value);
+            const username = '{{ session["username"] }}';
+
+            // Check authorization before sending message
+            if (!isRoomAuthorized(roomId)) {
+                console.error('Not authorized to send messages in this room');
+                alert('You are not authorized to send messages in this room. Please join the room first.');
+                showJoinRoomModal(roomId);
+                return;
+            }
+
+            if (!message.trim() && !currentMediaFile) {
+                console.log('No message or media to send');
+                return;
+            }
+
+            try {
+                setLoadingState(true);
+                let mediaData = null;
+                
+                if (currentMediaFile) {
+                    setLoadingState(true, 'Uploading media...');
+                    const formData = new FormData();
+                    formData.append('file', currentMediaFile);
+                    
+                    const uploadResponse = await fetch('/upload-media', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const uploadResult = await uploadResponse.json();
+                    if (!uploadResult.success) {
+                        throw new Error(uploadResult.message);
+                    }
+                    
+                    mediaData = uploadResult;
+                    setLoadingState(true, 'Media uploaded, sending message...');
+                }
+                
+                console.log('Sending message:', {
+                    message: message.trim(),
+                    roomId,
+                    username,
+                    hasMedia: !!mediaData
+                });
+
+                const response = await fetch('/create', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: message.trim(),
+                        room_id: roomId,
+                        username: username,
+                        media_data: mediaData
+                    })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    console.log('Message sent successfully');
+                    messageInput.value = '';
+                    removeMedia();
+                    refreshMessages();
+                } else {
+                    console.error('Error from server:', data.message);
+                    if (data.message.includes('not authorized')) {
+                        // If authorization error, show join modal
+                        showJoinRoomModal(roomId);
+                    } else {
+                        alert(data.message || 'Error sending message');
+                    }
+                }
+            } catch (error) {
+                console.error('Error sending message:', error);
+                alert('Error sending message');
+            } finally {
+                setLoadingState(false);
+            }
+        }
+
+        // Add these new functions for lightbox functionality
+        function openLightbox(imgSrc) {
+            const lightbox = document.getElementById('lightbox');
+            const lightboxImg = document.getElementById('lightbox-img');
+            lightboxImg.src = imgSrc;
+            lightbox.style.display = 'block';
+            document.body.style.overflow = 'hidden'; // Prevent scrolling when lightbox is open
+        }
+
+        function closeLightbox() {
+            const lightbox = document.getElementById('lightbox');
+            lightbox.style.display = 'none';
+            document.body.style.overflow = 'auto'; // Restore scrolling
+        }
+
+        // Add keyboard event listener to close lightbox with Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeLightbox();
+            }
+        });
+
+        // Prevent lightbox image click from closing the lightbox
+        document.getElementById('lightbox-img').addEventListener('click', function(e) {
+            e.stopPropagation();
         });
 
         function handleFileSelect(event) {
@@ -647,97 +1045,6 @@
                 uploadStatus.classList.remove('text-blue-600');
             }
         }
-
-        async function sendMessage() {
-            const messageInput = document.getElementById('message');
-            const roomIdInput = document.getElementById('room_id');
-            
-            if (!messageInput || !roomIdInput) return;
-            
-            const message = messageInput.value;
-            const roomId = roomIdInput.value;
-            const username = '{{ session["username"] }}';
-
-            if (!message.trim() && !currentMediaFile) return;
-
-            try {
-                setLoadingState(true);
-                let mediaData = null;
-                
-                if (currentMediaFile) {
-                    setLoadingState(true, 'Uploading media...');
-                    const formData = new FormData();
-                    formData.append('file', currentMediaFile);
-                    
-                    const uploadResponse = await fetch('/upload-media', {
-                        method: 'POST',
-                        body: formData
-                    });
-                    
-                    const uploadResult = await uploadResponse.json();
-                    if (!uploadResult.success) {
-                        throw new Error(uploadResult.message);
-                    }
-                    
-                    mediaData = uploadResult;
-                    setLoadingState(true, 'Media uploaded, sending message...');
-                }
-                
-                const response = await fetch('/create', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        message: message.trim(),
-                        room_id: roomId,
-                        username: username,
-                        media_data: mediaData
-                    })
-                });
-                
-                const data = await response.json();
-                if (data.success) {
-                    messageInput.value = '';
-                    removeMedia();
-                    refreshMessages();
-                } else {
-                    alert(data.message || 'Error sending message');
-                }
-            } catch (error) {
-                console.error('Error:', error);
-                alert('Error sending message');
-            } finally {
-                setLoadingState(false);
-            }
-        }
-
-        // Add these new functions for lightbox functionality
-        function openLightbox(imgSrc) {
-            const lightbox = document.getElementById('lightbox');
-            const lightboxImg = document.getElementById('lightbox-img');
-            lightboxImg.src = imgSrc;
-            lightbox.style.display = 'block';
-            document.body.style.overflow = 'hidden'; // Prevent scrolling when lightbox is open
-        }
-
-        function closeLightbox() {
-            const lightbox = document.getElementById('lightbox');
-            lightbox.style.display = 'none';
-            document.body.style.overflow = 'auto'; // Restore scrolling
-        }
-
-        // Add keyboard event listener to close lightbox with Escape key
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-                closeLightbox();
-            }
-        });
-
-        // Prevent lightbox image click from closing the lightbox
-        document.getElementById('lightbox-img').addEventListener('click', function(e) {
-            e.stopPropagation();
-        });
     </script>
 </head>
 <body class="bg-gray-100 min-h-screen">
@@ -747,6 +1054,10 @@
         <img id="lightbox-img" src="" alt="Fullscreen image">
     </div>
     
+    <div class="back-button" id="backButton" onclick="goBackToRooms()">
+        <i class="fas fa-arrow-left text-gray-600"></i>
+    </div>
+
     <div class="main-container">
         <!-- Left Sidebar - Favorites -->
         <div class="left-sidebar">
@@ -765,96 +1076,86 @@
 
         <!-- Main Content Area -->
         <div class="main-content">
-            <div class="flex justify-between items-center mb-8">
-                <h1 class="text-3xl font-bold text-gray-800">Local Chat Rooms</h1>
-                <div class="flex items-center space-x-4">
-                    <span class="text-gray-600">Welcome, {{ session['username'] }}</span>
-                    <a href="{{ url_for('logout') }}" class="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600">Logout</a>
-                </div>
-            </div>
-
-            <!-- Available Rooms Section -->
-            <div class="bg-white rounded-lg shadow-md p-6">
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-xl font-semibold text-gray-800">Available Rooms</h2>
-                    <span class="text-sm text-gray-500">{{ rooms|length }} rooms total</span>
-                </div>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {% for room in rooms %}
-                    <div class="room-item cursor-pointer bg-gray-50 p-4 rounded-lg hover:bg-gray-100 transition-colors duration-200"
-                         onclick="selectRoom({{ room.id }}, {{ room.is_private|tojson }})"
-                         data-room-id="{{ room.id }}">
-                        <div class="flex justify-between items-start">
-                            <h3 class="font-medium text-gray-800">{{ room.name }}</h3>
-                            <i class="favorite-star cursor-pointer {{ 'fas' if room.id in favorite_room_ids else 'far' }} fa-star text-yellow-400"
-                               onclick="toggleFavorite({{ room.id }}, event)"></i>
-                        </div>
-                        <div class="flex items-center mt-2">
-                            <span class="text-xs {{ 'bg-yellow-100 text-yellow-800' if room.is_private else 'bg-green-100 text-green-800' }} px-2 py-1 rounded">
-                                {{ 'Private' if room.is_private else 'Public' }}
-                            </span>
-                            <span class="text-xs text-gray-500 ml-2">
-                                Created {{ room.created_at|datetime }}
-                            </span>
-                        </div>
-                    </div>
-                    {% endfor %}
-                </div>
-            </div>
-
-            <!-- Chat Area -->
-            <div id="chat-area" class="bg-white rounded-lg shadow-md p-6 mt-6" style="display: none;">
-                <!-- Current Room Header -->
-                <div id="current-room-header" class="border-b bg-gray-50 mb-4">
-                    <div class="p-4">
-                        <h2 id="current-room-name" class="text-xl font-semibold text-gray-800"></h2>
-                        <p id="room-status" class="text-sm text-gray-500 mt-1"></p>
+            <!-- Rooms List View -->
+            <div id="rooms-view">
+                <div class="flex justify-between items-center mb-8">
+                    <h1 class="text-3xl font-bold text-gray-800">Local Chat Rooms</h1>
+                    <div class="flex items-center space-x-4">
+                        <span class="text-gray-600">Welcome, {{ session['username'] }}</span>
+                        <a href="{{ url_for('logout') }}" class="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600">Logout</a>
                     </div>
                 </div>
 
-                <!-- Messages List -->
-                <div id="message-list" class="flex-grow overflow-y-auto p-4 space-y-4" style="height: 500px; max-height: 500px;">
-                    <!-- Messages will be loaded here -->
-                </div>
-
-                <!-- Message Form -->
-                <div id="message-form" class="border-t bg-white pt-4 mt-4">
-                    <form id="message-form-element" onsubmit="return false;" class="space-y-4">
-                        <input type="hidden" id="room_id" name="room_id">
-                        <input type="hidden" name="username" value="{{ session['username'] }}">
-                        <div>
-                            <label for="message" class="block text-sm font-medium text-gray-700 mb-2">New Message</label>
-                            <textarea id="message" name="message" rows="3" 
-                                class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                placeholder="Type your message here..."></textarea>
-                        </div>
-                        <div class="flex items-center space-x-4">
-                            <label class="flex-1">
-                                <input type="file" id="media-upload" accept="image/*,video/*" class="hidden" onchange="handleFileSelect(event)">
-                                <div class="cursor-pointer bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 flex items-center justify-center">
-                                    <i class="fas fa-paperclip mr-2"></i>
-                                    Attach Media
-                                </div>
-                            </label>
-                            <button type="button" id="send-button" onclick="sendMessage()"
-                                class="flex-1 bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 flex items-center justify-center">
-                                <span id="send-button-text">Send Message</span>
-                                <div id="loading-spinner" class="hidden ml-2">
-                                    <i class="fas fa-spinner fa-spin"></i>
-                                </div>
-                            </button>
-                        </div>
-                        <div id="media-preview" class="hidden mt-2">
-                            <div class="relative bg-gray-100 p-2 rounded-lg">
-                                <div id="preview-content"></div>
-                                <button onclick="removeMedia()" class="absolute top-2 right-2 text-gray-600 hover:text-red-500">
-                                    <i class="fas fa-times"></i>
-                                </button>
+                <!-- Available Rooms Section -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-semibold text-gray-800">Available Rooms</h2>
+                        <span class="text-sm text-gray-500">{{ rooms|length }} rooms total</span>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {% for room in rooms %}
+                        <div class="room-item cursor-pointer bg-gray-50 p-4 rounded-lg hover:bg-gray-100 transition-colors duration-200"
+                             onclick="selectRoom({{ room.id }}, {{ room.is_private|tojson }})"
+                             data-room-id="{{ room.id }}">
+                            <div class="flex justify-between items-start">
+                                <h3 class="font-medium text-gray-800">{{ room.name }}</h3>
+                                <i class="favorite-star cursor-pointer {{ 'fas' if room.id in favorite_room_ids else 'far' }} fa-star text-yellow-400"
+                                   onclick="toggleFavorite({{ room.id }}, event)"></i>
+                            </div>
+                            <div class="flex items-center mt-2">
+                                <span class="text-xs {{ 'bg-yellow-100 text-yellow-800' if room.is_private else 'bg-green-100 text-green-800' }} px-2 py-1 rounded">
+                                    {{ 'Private' if room.is_private else 'Public' }}
+                                </span>
+                                <span class="text-xs text-gray-500 ml-2">
+                                    Created {{ room.created_at|datetime }}
+                                </span>
                             </div>
                         </div>
-                        <div id="upload-status" class="hidden mt-2 text-sm"></div>
-                    </form>
+                        {% endfor %}
+                    </div>
                 </div>
+            </div>
+
+            <!-- Chat View -->
+            <div id="chat-area" class="room-view">
+                <div class="flex justify-between items-center bg-white rounded-lg shadow p-4 mb-4">
+                    <div>
+                        <h2 id="current-room-name" class="text-xl font-bold"></h2>
+                        <span id="room-status" class="text-sm text-gray-500"></span>
+                    </div>
+                    <button onclick="goBackToRooms()" class="bg-gray-100 hover:bg-gray-200 text-gray-600 px-4 py-2 rounded-lg flex items-center">
+                        <i class="fas fa-arrow-left mr-2"></i>
+                        Back to Rooms
+                    </button>
+                </div>
+                <div id="message-list" class="space-y-4 mb-4" style="max-height: calc(100vh - 300px); overflow-y: auto;"></div>
+                <form id="message-form" class="bg-white rounded-lg shadow p-4" onsubmit="event.preventDefault(); sendMessage();">
+                    <input type="hidden" id="room_id" name="room_id" value="">
+                    <div class="flex items-center space-x-2">
+                        <textarea id="message" name="message" rows="2" class="flex-1 border rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Type your message..."></textarea>
+                        <div class="flex space-x-2">
+                            <label for="media-upload" class="cursor-pointer bg-gray-100 hover:bg-gray-200 rounded-lg p-2">
+                                <i class="fas fa-image text-gray-600"></i>
+                                <input type="file" id="media-upload" name="media" accept="image/*,video/*" class="hidden" onchange="handleFileSelect(event)">
+                            </label>
+                            <button type="submit" id="send-button" class="bg-blue-500 hover:bg-blue-600 text-white rounded-lg px-4 py-2">
+                                <span id="send-button-text">Send Message</span>
+                                <span id="loading-spinner" class="hidden">
+                                    <i class="fas fa-spinner fa-spin"></i>
+                                </span>
+                            </button>
+                        </div>
+                    </div>
+                    <div id="media-preview" class="hidden mt-2 p-2 bg-gray-50 rounded-lg">
+                        <div class="flex justify-between items-center">
+                            <div id="preview-content"></div>
+                            <button type="button" onclick="removeMedia()" class="text-red-500 hover:text-red-600">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div id="upload-status" class="hidden mt-2 text-sm"></div>
+                </form>
             </div>
         </div>
 

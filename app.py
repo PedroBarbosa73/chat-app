@@ -699,6 +699,32 @@ def upload_media():
         logger.error(f"Error in upload_media route: {str(e)}")
         return jsonify({'success': False, 'message': 'Error processing upload request'})
 
+@app.route('/delete-room/<int:room_id>', methods=['DELETE'])
+def delete_room(room_id):
+    if not session.get('username') or session['username'].lower() != 'nando':
+        return jsonify({'success': False, 'message': 'Unauthorized'}), 403
+
+    try:
+        # Delete messages first (due to foreign key constraint)
+        db.session.query(Message).filter_by(room_id=room_id).delete()
+        
+        # Delete room favorites
+        db.session.query(FavoriteRoom).filter_by(room_id=room_id).delete()
+        
+        # Delete the room
+        room = db.session.query(Room).filter_by(id=room_id).first()
+        if room:
+            db.session.delete(room)
+            db.session.commit()
+            return jsonify({'success': True})
+        else:
+            return jsonify({'success': False, 'message': 'Room not found'}), 404
+            
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error deleting room: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error deleting room'}), 500
+
 if __name__ == '__main__':
     try:
         # Azure Web Apps expects port 8000 when running in container
