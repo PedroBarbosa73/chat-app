@@ -75,11 +75,11 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 app.config['SQLALCHEMY_POOL_PRE_PING'] = True  # Enable connection testing before use
 db = SQLAlchemy(app)
 
-# Replace @app.before_first_request with a flag and @app.before_request
+# Initialize database on first request
 _is_first_request = True
 
 @app.before_request
-def before_first_request():
+def initialize_database():
     global _is_first_request
     if _is_first_request:
         _is_first_request = False
