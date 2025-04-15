@@ -1,6 +1,41 @@
-# Message Exchange App
+# Chat Room Application
 
-A simple web application that allows you to exchange messages with friends through unique URLs.
+A modern, feature-rich chat application that allows users to create and participate in both public and private chat rooms. Built with Flask and Azure SQL Database.
+
+## Features
+
+- **User Authentication**
+  - Secure user registration and login
+  - Password hashing for user security
+  - Session management
+
+- **Chat Rooms**
+  - Create public or private rooms
+  - Password protection for private rooms
+  - Real-time message updates
+  - Room access management
+  - Favorite rooms system
+
+- **Messaging**
+  - Real-time message display
+  - Message pagination
+  - Auto-scroll to new messages
+  - Username display with messages
+  - Timestamps for all messages
+
+- **User Interface**
+  - Modern, responsive design with Tailwind CSS
+  - Three-panel layout (Favorites, Main Chat, Room Creation)
+  - Active room highlighting
+  - Room status indicators (Public/Private)
+  - Clean and intuitive navigation
+
+- **Security**
+  - Secure password hashing
+  - Protected API endpoints
+  - Environment-based configuration
+  - SQL injection prevention
+  - XSS protection
 
 ## Local Development Setup
 
@@ -67,6 +102,15 @@ git commit -m "Ready for deployment"
 git push azure main
 ```
 
+## How to Use
+
+1. Register for a new account or login with existing credentials
+2. Create a new chat room (public or private)
+3. Join existing rooms (enter password if required for private rooms)
+4. Start chatting!
+5. Favorite rooms you frequently visit
+6. Use the three-panel interface to navigate between rooms
+
 ## Security Notes
 
 1. Never commit your `.env` file to version control
@@ -75,20 +119,15 @@ git push azure main
 4. Regularly rotate your database credentials and secret keys
 5. Use strong, unique passwords for your database
 
-## Features
+## Production Recommendations
 
-- Simple and clean interface
-- Secure message sharing through unique URLs
-- No registration required
-- Cloud deployment ready
-- Azure SQL Database support
-
-## Note
-
-For production use, make sure to:
 - Use strong secret keys
 - Configure proper database settings
 - Set up proper security measures
 - Monitor application performance
 - Set up proper backup procedures
-- Use managed identities for database access (recommended for production) 
+- Use managed identities for database access
+- Enable SSL/TLS encryption
+- Implement rate limiting
+- Set up logging and monitoring
+- Configure automatic scaling 

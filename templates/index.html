@@ -37,6 +37,40 @@
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
             padding: 1rem;
         }
+        
+        /* Lightbox styles */
+        .lightbox {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.9);
+            z-index: 1000;
+            cursor: pointer;
+        }
+        
+        .lightbox img {
+            max-width: 90%;
+            max-height: 90vh;
+            margin: auto;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            object-fit: contain;
+        }
+        
+        .lightbox-close {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: white;
+            font-size: 30px;
+            cursor: pointer;
+            z-index: 1001;
+        }
     </style>
     <script>
         let currentRoomId = null;
@@ -45,6 +79,7 @@
         let isLoadingMessages = false;
         let hasMoreMessages = true;
         let isLoadingFavorites = false;
+        let currentMediaFile = null;
 
         function refreshMessages(loadMore = false) {
             if (!currentRoomId || isLoadingMessages) return;
@@ -94,21 +129,47 @@
                     data.messages.forEach(msg => {
                         const messageDiv = document.createElement('div');
                         messageDiv.className = 'bg-white p-4 rounded-lg shadow mb-4';
+                        
+                        let mediaContent = '';
+                        if (msg.has_media) {
+                            if (msg.media_type === 'image') {
+                                mediaContent = `
+                                    <div class="mt-2">
+                                        <img src="${msg.media_url}" 
+                                             alt="Shared image" 
+                                             class="max-w-full rounded-lg max-h-96 object-contain cursor-pointer" 
+                                             onclick="openLightbox('${msg.media_url}')"
+                                             style="transition: transform 0.2s;"
+                                             onmouseover="this.style.transform='scale(1.02)'"
+                                             onmouseout="this.style.transform='scale(1)'">
+                                    </div>
+                                `;
+                            } else if (msg.media_type === 'video') {
+                                mediaContent = `
+                                    <div class="mt-2">
+                                        <video controls class="max-w-full rounded-lg max-h-96">
+                                            <source src="${msg.media_url}" type="video/mp4">
+                                            Your browser does not support the video tag.
+                                        </video>
+                                    </div>
+                                `;
+                            }
+                        }
+                        
                         messageDiv.innerHTML = `
                             <div class="flex items-center mb-2">
                                 <span class="font-semibold text-blue-600">${msg.username}</span>
                                 <span class="text-xs text-gray-500 ml-2">${new Date(msg.created_at).toLocaleString('en-GB', { hour12: false })}</span>
                             </div>
-                            <p class="text-gray-800 whitespace-pre-wrap">${msg.content}</p>
+                            ${msg.content ? `<p class="text-gray-800 whitespace-pre-wrap">${msg.content}</p>` : ''}
+                            ${mediaContent}
                         `;
-                        if (loadMore) {
-                            messageList.appendChild(messageDiv);
-                        } else {
-                            messageList.insertBefore(messageDiv, messageList.firstChild);
-                        }
+                        
+                        // Always append messages to maintain chronological order
+                        messageList.appendChild(messageDiv);
                     });
 
-                    // If not loading more, scroll to bottom
+                    // Always scroll to bottom when loading initial messages
                     if (!loadMore) {
                         messageList.scrollTop = messageList.scrollHeight;
                     }
@@ -273,31 +334,46 @@
 
         // Load favorites from server
         function loadFavorites() {
-            if (isLoadingFavorites) return;
+            if (isLoadingFavorites) {
+                console.log('Favorites already loading, skipping...');
+                return;
+            }
+            console.log('Starting loadFavorites...');
             isLoadingFavorites = true;
 
             fetch('/favorite-rooms')
-                .then(response => response.json())
+                .then(response => {
+                    console.log('Favorites response status:', response.status);
+                    return response.json();
+                })
                 .then(data => {
+                    console.log('Favorites data received:', data);
                     if (data.success) {
                         try {
                             // Update the favoriteRoomIds array
                             favoriteRoomIds = data.favorites.map(favorite => favorite.room_id);
+                            console.log('Updated favoriteRoomIds:', favoriteRoomIds);
                             
                             // Update the favorites list
                             const favoritesList = document.getElementById('favorites-list');
-                            if (!favoritesList) return;
+                            if (!favoritesList) {
+                                console.error('Favorites list element not found');
+                                return;
+                            }
                             
                             favoritesList.innerHTML = ''; // Clear the list
                             
                             // Add each favorite room
                             data.favorites.forEach(favorite => {
+                                console.log('Processing favorite:', favorite);
                                 const roomElement = document.querySelector(`[data-room-id="${favorite.room_id}"]`);
                                 if (roomElement) {
                                     const favoriteRoom = roomElement.cloneNode(true);
                                     favoriteRoom.classList.add('favorite-item');
                                     favoritesList.appendChild(favoriteRoom);
                                     updateStarIcons(favorite.room_id, true);
+                                } else {
+                                    console.warn(`Room element not found for favorite room_id: ${favorite.room_id}`);
                                 }
                             });
                             
@@ -307,6 +383,7 @@
                             throw err;
                         }
                     } else {
+                        console.error('Failed to load favorites:', data.message);
                         throw new Error(data.message || 'Failed to load favorites');
                     }
                 })
@@ -318,12 +395,14 @@
                     }
                 })
                 .finally(() => {
+                    console.log('Finished loadFavorites');
                     isLoadingFavorites = false;
                 });
         }
 
         function toggleFavorite(roomId, event) {
             event.stopPropagation(); // Prevent room selection when clicking the star
+            console.log('Toggling favorite for room:', roomId);
             
             fetch('/favorite-room', {
                 method: 'POST',
@@ -332,8 +411,12 @@
                 },
                 body: `room_id=${roomId}`
             })
-            .then(response => response.json())
+            .then(response => {
+                console.log('Toggle favorite response status:', response.status);
+                return response.json();
+            })
             .then(data => {
+                console.log('Toggle favorite response:', data);
                 if (data.success) {
                     // Update star icons
                     updateStarIcons(roomId, data.is_favorite);
@@ -343,16 +426,23 @@
                     } else {
                         favoriteRoomIds = favoriteRoomIds.filter(id => id !== roomId);
                     }
+                    console.log('Updated favoriteRoomIds:', favoriteRoomIds);
                     
                     // Force reload of favorites list
                     const favoritesList = document.getElementById('favorites-list');
                     if (!favoritesList.classList.contains('hidden')) {
+                        console.log('Reloading favorites list...');
                         toggleFavoritesDropdown(); // Close
                         toggleFavoritesDropdown(); // Open to reload
                     }
                 } else {
+                    console.error('Error updating favorite status:', data.message);
                     alert(data.message || 'Error updating favorite status');
                 }
+            })
+            .catch(error => {
+                console.error('Error toggling favorite:', error);
+                alert('Error updating favorite status');
             });
         }
 
@@ -381,6 +471,8 @@
             const favoritesList = document.getElementById('favorites-list');
             const toggleButton = document.getElementById('toggle-favorites');
             
+            console.log('Toggling favorites dropdown, current state:', favoritesList.classList.contains('hidden'));
+            
             if (favoritesList.classList.contains('hidden')) {
                 // Show loading state
                 favoritesList.innerHTML = '<div class="text-gray-500 text-center py-4">Loading favorites...</div>';
@@ -389,9 +481,12 @@
                 
                 // Fetch favorites
                 fetch('/favorite-rooms')
-                    .then(response => response.json())
+                    .then(response => {
+                        console.log('Favorites dropdown response status:', response.status);
+                        return response.json();
+                    })
                     .then(data => {
-                        console.log('Favorites data:', data);
+                        console.log('Favorites dropdown data:', data);
                         favoritesList.innerHTML = ''; // Clear loading message
                         
                         if (data.success) {
@@ -399,6 +494,7 @@
                                 favoritesList.innerHTML = '<div class="text-gray-500 text-center py-4">No favorite rooms yet</div>';
                             } else {
                                 data.favorites.forEach(favorite => {
+                                    console.log('Adding favorite to dropdown:', favorite);
                                     const roomDiv = document.createElement('div');
                                     roomDiv.className = 'room-item cursor-pointer bg-gray-50 p-4 rounded-lg hover:bg-gray-100 transition-colors duration-200 mb-2';
                                     roomDiv.setAttribute('data-room-id', favorite.room_id);
@@ -425,13 +521,15 @@
                             }
                             // Update the favoriteRoomIds array
                             favoriteRoomIds = data.favorites.map(favorite => favorite.room_id);
+                            console.log('Updated favoriteRoomIds from dropdown:', favoriteRoomIds);
                         } else {
+                            console.error('Error loading favorites in dropdown:', data.message);
                             favoritesList.innerHTML = '<div class="text-red-500 text-center py-4">Error loading favorites. Please try again.</div>';
                         }
                         updateFavoritesCount();
                     })
                     .catch(error => {
-                        console.error('Error loading favorites:', error);
+                        console.error('Error loading favorites in dropdown:', error);
                         favoritesList.innerHTML = '<div class="text-red-500 text-center py-4">Error loading favorites. Please try again.</div>';
                     });
             } else {
@@ -485,7 +583,72 @@
             loadFavorites();
         });
 
-        function sendMessage() {
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
+                alert('Please select an image or video file');
+                return;
+            }
+
+            currentMediaFile = file;
+            const preview = document.getElementById('media-preview');
+            const previewContent = document.getElementById('preview-content');
+            preview.classList.remove('hidden');
+            
+            if (file.type.startsWith('image/')) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    previewContent.innerHTML = `<img src="${e.target.result}" class="max-h-32 rounded">`;
+                };
+                reader.readAsDataURL(file);
+            } else {
+                previewContent.innerHTML = `<div class="p-2"><i class="fas fa-video mr-2"></i>${file.name}</div>`;
+            }
+        }
+
+        function removeMedia() {
+            currentMediaFile = null;
+            document.getElementById('media-upload').value = '';
+            document.getElementById('media-preview').classList.add('hidden');
+            document.getElementById('preview-content').innerHTML = '';
+        }
+
+        function setLoadingState(isLoading, status = '') {
+            const sendButton = document.getElementById('send-button');
+            const sendButtonText = document.getElementById('send-button-text');
+            const loadingSpinner = document.getElementById('loading-spinner');
+            const uploadStatus = document.getElementById('upload-status');
+            const messageInput = document.getElementById('message');
+            const mediaUpload = document.getElementById('media-upload');
+
+            if (isLoading) {
+                sendButton.disabled = true;
+                sendButton.classList.add('opacity-75', 'cursor-not-allowed');
+                loadingSpinner.classList.remove('hidden');
+                sendButtonText.textContent = 'Sending...';
+                messageInput.disabled = true;
+                mediaUpload.disabled = true;
+                
+                if (status) {
+                    uploadStatus.textContent = status;
+                    uploadStatus.classList.remove('hidden');
+                    uploadStatus.classList.add('text-blue-600');
+                }
+            } else {
+                sendButton.disabled = false;
+                sendButton.classList.remove('opacity-75', 'cursor-not-allowed');
+                loadingSpinner.classList.add('hidden');
+                sendButtonText.textContent = 'Send Message';
+                messageInput.disabled = false;
+                mediaUpload.disabled = false;
+                uploadStatus.classList.add('hidden');
+                uploadStatus.classList.remove('text-blue-600');
+            }
+        }
+
+        async function sendMessage() {
             const messageInput = document.getElementById('message');
             const roomIdInput = document.getElementById('room_id');
             
@@ -495,32 +658,95 @@
             const roomId = roomIdInput.value;
             const username = '{{ session["username"] }}';
 
-            if (!message.trim()) return;
+            if (!message.trim() && !currentMediaFile) return;
 
-            fetch('/create', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                body: `message=${encodeURIComponent(message)}&room_id=${roomId}&username=${encodeURIComponent(username)}`
-            })
-            .then(response => response.json())
-            .then(data => {
+            try {
+                setLoadingState(true);
+                let mediaData = null;
+                
+                if (currentMediaFile) {
+                    setLoadingState(true, 'Uploading media...');
+                    const formData = new FormData();
+                    formData.append('file', currentMediaFile);
+                    
+                    const uploadResponse = await fetch('/upload-media', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const uploadResult = await uploadResponse.json();
+                    if (!uploadResult.success) {
+                        throw new Error(uploadResult.message);
+                    }
+                    
+                    mediaData = uploadResult;
+                    setLoadingState(true, 'Media uploaded, sending message...');
+                }
+                
+                const response = await fetch('/create', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: message.trim(),
+                        room_id: roomId,
+                        username: username,
+                        media_data: mediaData
+                    })
+                });
+                
+                const data = await response.json();
                 if (data.success) {
                     messageInput.value = '';
+                    removeMedia();
                     refreshMessages();
                 } else {
                     alert(data.message || 'Error sending message');
                 }
-            })
-            .catch(error => {
+            } catch (error) {
                 console.error('Error:', error);
                 alert('Error sending message');
-            });
+            } finally {
+                setLoadingState(false);
+            }
         }
+
+        // Add these new functions for lightbox functionality
+        function openLightbox(imgSrc) {
+            const lightbox = document.getElementById('lightbox');
+            const lightboxImg = document.getElementById('lightbox-img');
+            lightboxImg.src = imgSrc;
+            lightbox.style.display = 'block';
+            document.body.style.overflow = 'hidden'; // Prevent scrolling when lightbox is open
+        }
+
+        function closeLightbox() {
+            const lightbox = document.getElementById('lightbox');
+            lightbox.style.display = 'none';
+            document.body.style.overflow = 'auto'; // Restore scrolling
+        }
+
+        // Add keyboard event listener to close lightbox with Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeLightbox();
+            }
+        });
+
+        // Prevent lightbox image click from closing the lightbox
+        document.getElementById('lightbox-img').addEventListener('click', function(e) {
+            e.stopPropagation();
+        });
     </script>
 </head>
 <body class="bg-gray-100 min-h-screen">
+    <!-- Add lightbox container at the top level of the body -->
+    <div id="lightbox" class="lightbox" onclick="closeLightbox()">
+        <span class="lightbox-close">&times;</span>
+        <img id="lightbox-img" src="" alt="Fullscreen image">
+    </div>
+    
     <div class="main-container">
         <!-- Left Sidebar - Favorites -->
         <div class="left-sidebar">
@@ -600,12 +826,33 @@
                             <label for="message" class="block text-sm font-medium text-gray-700 mb-2">New Message</label>
                             <textarea id="message" name="message" rows="3" 
                                 class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                placeholder="Type your message here..." required></textarea>
+                                placeholder="Type your message here..."></textarea>
                         </div>
-                        <button type="button" onclick="sendMessage()"
-                            class="w-full bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600">
-                            Send Message
-                        </button>
+                        <div class="flex items-center space-x-4">
+                            <label class="flex-1">
+                                <input type="file" id="media-upload" accept="image/*,video/*" class="hidden" onchange="handleFileSelect(event)">
+                                <div class="cursor-pointer bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 flex items-center justify-center">
+                                    <i class="fas fa-paperclip mr-2"></i>
+                                    Attach Media
+                                </div>
+                            </label>
+                            <button type="button" id="send-button" onclick="sendMessage()"
+                                class="flex-1 bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 flex items-center justify-center">
+                                <span id="send-button-text">Send Message</span>
+                                <div id="loading-spinner" class="hidden ml-2">
+                                    <i class="fas fa-spinner fa-spin"></i>
+                                </div>
+                            </button>
+                        </div>
+                        <div id="media-preview" class="hidden mt-2">
+                            <div class="relative bg-gray-100 p-2 rounded-lg">
+                                <div id="preview-content"></div>
+                                <button onclick="removeMedia()" class="absolute top-2 right-2 text-gray-600 hover:text-red-500">
+                                    <i class="fas fa-times"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div id="upload-status" class="hidden mt-2 text-sm"></div>
                     </form>
                 </div>
             </div>
