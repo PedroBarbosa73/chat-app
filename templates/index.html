@@ -107,6 +107,54 @@
             cursor: pointer;
             z-index: 1001;
         }
+
+        .chat-window {
+            position: fixed;
+            bottom: 0;
+            right: 20px;
+            width: 280px;
+            background: white;
+            border-radius: 8px 8px 0 0;
+            box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+            z-index: 1000;
+            display: none;
+        }
+        .chat-window-header {
+            padding: 8px 12px;
+            background: #4a76a8;
+            color: white;
+            border-radius: 8px 8px 0 0;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .chat-window-messages {
+            height: 250px;
+            overflow-y: auto;
+            padding: 10px;
+            background: #f8f9fa;
+        }
+        .chat-window-input {
+            padding: 8px;
+            border-top: 1px solid #e9ecef;
+            background: white;
+        }
+        .chat-windows-container {
+            position: fixed;
+            bottom: 0;
+            right: 20px;
+            display: flex;
+            gap: 20px;
+            z-index: 1000;
+        }
+        .minimized {
+            height: 40px;
+        }
+        .minimized .chat-window-messages,
+        .minimized .chat-window-input {
+            display: none;
+        }
     </style>
     <script>
         let currentRoomId = null;
@@ -117,6 +165,30 @@
         let isLoadingFavorites = false;
         let currentMediaFile = null;
         let authorizedRooms = {{ authorized_rooms|tojson }};
+        let activePrivateChats = new Map(); // Store active private chat windows
+        let chatWindowWidth = 280; // Width of each chat window
+        let maxChatWindows = 3; // Maximum number of chat windows shown at once
+
+        // Add function to save current room to localStorage
+        function saveCurrentRoom(roomId) {
+            if (roomId) {
+                localStorage.setItem('currentRoomId', roomId);
+            } else {
+                localStorage.removeItem('currentRoomId');
+            }
+        }
+
+        // Add function to restore room on page load
+        function restoreCurrentRoom() {
+            const savedRoomId = localStorage.getItem('currentRoomId');
+            if (savedRoomId) {
+                const roomElement = document.querySelector(`[data-room-id="${savedRoomId}"]`);
+                if (roomElement) {
+                    const isPrivate = roomElement.querySelector('.bg-yellow-100') !== null;
+                    selectRoom(parseInt(savedRoomId), isPrivate);
+                }
+            }
+        }
 
         function scrollToBottom(messageList, attempts = 0) {
             const maxAttempts = 3;
@@ -289,6 +361,9 @@
                 }
             }
 
+            // Save current room
+            saveCurrentRoom(roomId);
+
             // Set current room and reset page
             currentRoomId = roomId;
             currentPage = 1;
@@ -351,8 +426,10 @@
             if (chatArea) chatArea.style.display = 'none';
             if (roomsView) roomsView.style.display = 'block';
             
-            // Clear current room
+            // Clear current room and remove from localStorage
             currentRoomId = null;
+            saveCurrentRoom(null);
+            
             const messageList = document.getElementById('message-list');
             if (messageList) messageList.innerHTML = '';
             
@@ -636,9 +713,6 @@
                                             <span class="text-xs ${favorite.room.is_private ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'} px-2 py-1 rounded">
                                                 ${favorite.room.is_private ? 'Private' : 'Public'}
                                             </span>
-                                            <span class="text-xs text-gray-500 ml-2">
-                                                Created ${new Date(favorite.room.created_at).toLocaleString()}
-                                            </span>
                                         </div>
                                     `;
                                     
@@ -841,6 +915,9 @@
                 roomsContainer.classList.add('available-rooms');
             }
 
+            // Restore current room if any
+            restoreCurrentRoom();
+
             // Add delete buttons to rooms if admin
             if (isAdmin()) {
                 document.querySelectorAll('.room-item').forEach(room => {
@@ -856,6 +933,21 @@
                     }
                 });
             }
+
+            // Initial users count
+            fetch('/users')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('users-count').textContent = `${data.users.length} users`;
+                    }
+                })
+                .catch(error => console.error('Error getting initial users count:', error));
+
+            initializePrivateChat();
+
+            // Initialize message times
+            updateMessageTimes();
         });
 
         async function sendMessage() {
@@ -1045,6 +1137,415 @@
                 uploadStatus.classList.remove('text-blue-600');
             }
         }
+
+        function toggleUsersList() {
+            const usersList = document.getElementById('users-list');
+            const toggleButton = document.getElementById('toggle-users');
+            
+            console.log('Toggling users list, current state:', usersList.classList.contains('hidden'));
+            
+            if (usersList.classList.contains('hidden')) {
+                // Show loading state
+                usersList.innerHTML = '<div class="text-gray-500 text-center py-2"><i class="fas fa-spinner fa-spin mr-2"></i>Loading users...</div>';
+                usersList.classList.remove('hidden');
+                toggleButton.innerHTML = '<i class="fas fa-chevron-up"></i>';
+                
+                // Fetch users
+                fetch('/users')
+                    .then(response => response.json())
+                    .then(data => {
+                        console.log('Users response:', data);
+                        if (data.success) {
+                            usersList.innerHTML = '';
+                            if (!data.users || data.users.length === 0) {
+                                usersList.innerHTML = '<div class="text-gray-500 text-center py-2">No users registered yet</div>';
+                                document.getElementById('users-count').textContent = '0 users';
+                            } else {
+                                data.users.forEach(user => {
+                                    const userDiv = document.createElement('div');
+                                    userDiv.className = 'flex items-center justify-between p-2 bg-gray-50 rounded-lg hover:bg-gray-100 transition duration-200';
+                                    
+                                    userDiv.innerHTML = `
+                                        <div class="flex items-center">
+                                            <i class="fas fa-user text-blue-500 mr-2"></i>
+                                            <span class="text-sm">${user.username}</span>
+                                        </div>
+                                        <button onclick="openPrivateChat('${user.username}', event)" 
+                                                class="text-blue-500 hover:text-blue-600 transition-colors duration-200 ml-4"
+                                                title="Send private message">
+                                            <i class="fas fa-comment"></i>
+                                        </button>
+                                    `;
+                                    
+                                    usersList.appendChild(userDiv);
+                                });
+                                document.getElementById('users-count').textContent = `${data.users.length} users`;
+                            }
+                        } else {
+                            usersList.innerHTML = `
+                                <div class="text-red-500 text-center py-2">
+                                    <i class="fas fa-exclamation-circle mr-2"></i>
+                                    ${data.error || 'Failed to load users'}
+                                </div>
+                            `;
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error loading users:', error);
+                        usersList.innerHTML = `
+                            <div class="text-red-500 text-center py-2">
+                                <i class="fas fa-exclamation-circle mr-2"></i>
+                                Error loading users
+                            </div>
+                        `;
+                    });
+            } else {
+                usersList.classList.add('hidden');
+                toggleButton.innerHTML = '<i class="fas fa-chevron-down"></i>';
+            }
+        }
+
+        function initializePrivateChat() {
+            // Add click handlers to usernames for private messaging
+            document.querySelectorAll('#users-list .text-sm').forEach(usernameElement => {
+                usernameElement.style.cursor = 'pointer';
+                usernameElement.title = 'Click to start private chat';
+                usernameElement.addEventListener('click', (e) => {
+                    const username = e.target.textContent;
+                    openPrivateChat(username);
+                });
+            });
+        }
+
+        function openPrivateChat(targetUsername, event) {
+            if (event) {
+                event.stopPropagation();
+            }
+            
+            if (targetUsername === '{{ session["username"] }}') {
+                return; // Don't open chat with yourself
+            }
+
+            if (activePrivateChats.has(targetUsername)) {
+                // If chat window exists but is minimized, maximize it
+                const chatWindow = activePrivateChats.get(targetUsername);
+                if (chatWindow.classList.contains('minimized')) {
+                    maximizeChatWindow(targetUsername);
+                }
+                return;
+            }
+
+            console.log(`Opening chat with ${targetUsername}`);
+
+            // Create new chat window
+            const chatWindow = document.createElement('div');
+            chatWindow.className = 'chat-window';
+            chatWindow.innerHTML = `
+                <div class="chat-window-header" onclick="toggleChatWindow('${targetUsername}')">
+                    <span>${targetUsername}</span>
+                    <div>
+                        <button onclick="minimizeChatWindow('${targetUsername}', event)" class="text-white hover:text-gray-200 px-1">
+                            <i class="fas fa-minus"></i>
+                        </button>
+                        <button onclick="closePrivateChat('${targetUsername}', event)" class="text-white hover:text-gray-200 px-1">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="chat-window-messages" id="private-messages-${targetUsername}"></div>
+                <div class="chat-window-input">
+                    <input type="text" 
+                           class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                           placeholder="Type a message..."
+                           id="private-input-${targetUsername}">
+                </div>
+            `;
+
+            // Add to active chats and DOM
+            activePrivateChats.set(targetUsername, chatWindow);
+            
+            // Calculate position
+            const chatCount = activePrivateChats.size;
+            const position = (chatCount - 1) * (chatWindowWidth + 20);
+            chatWindow.style.right = `${position}px`;
+            
+            // Add to container
+            const container = document.querySelector('.chat-windows-container') || createChatWindowsContainer();
+            container.appendChild(chatWindow);
+            chatWindow.style.display = 'block';
+
+            // Add event listener for input
+            const input = chatWindow.querySelector(`#private-input-${targetUsername}`);
+            if (input) {
+                input.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        const message = input.value.trim();
+                        if (message) {
+                            sendPrivateMessage(targetUsername, message);
+                            input.value = '';
+                        }
+                    }
+                });
+            }
+
+            // Restore existing messages if any
+            const existingMessages = getPrivateChatMessages(targetUsername);
+            if (existingMessages.length > 0) {
+                console.log(`Restoring ${existingMessages.length} messages for ${targetUsername}`);
+                const messagesContainer = document.getElementById(`private-messages-${targetUsername}`);
+                existingMessages.forEach(msg => {
+                    const messageDiv = document.createElement('div');
+                    messageDiv.className = `flex ${msg.isOutgoing ? 'justify-end' : 'justify-start'} mb-2`;
+                    messageDiv.innerHTML = `
+                        <div class="${msg.isOutgoing ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-800'} rounded-lg px-3 py-2 max-w-[70%]">
+                            <p class="text-sm">${msg.message}</p>
+                            <div class="flex justify-between items-center mt-1">
+                                <span class="text-xs ${msg.isOutgoing ? 'text-blue-100' : 'text-gray-500'}">${msg.sender}</span>
+                                <span class="text-xs ${msg.isOutgoing ? 'text-blue-100' : 'text-gray-500'} message-timestamp ml-2" 
+                                      data-timestamp="${msg.timestamp}">${formatTimeAgo(msg.timestamp)}</span>
+                            </div>
+                        </div>
+                    `;
+                    messagesContainer.appendChild(messageDiv);
+                });
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            }
+
+            // Focus input
+            setTimeout(() => {
+                if (input) input.focus();
+            }, 100);
+
+            // If we have too many windows, minimize the oldest ones
+            if (chatCount > maxChatWindows) {
+                const oldestChat = activePrivateChats.keys().next().value;
+                minimizeChatWindow(oldestChat);
+            }
+        }
+
+        function createChatWindowsContainer() {
+            const container = document.createElement('div');
+            container.className = 'chat-windows-container';
+            document.body.appendChild(container);
+            return container;
+        }
+
+        function toggleChatWindow(username) {
+            const chatWindow = activePrivateChats.get(username);
+            if (chatWindow.classList.contains('minimized')) {
+                maximizeChatWindow(username);
+            } else {
+                minimizeChatWindow(username);
+            }
+        }
+
+        function minimizeChatWindow(username, event) {
+            if (event) event.stopPropagation();
+            const chatWindow = activePrivateChats.get(username);
+            chatWindow.classList.add('minimized');
+        }
+
+        function maximizeChatWindow(username) {
+            const chatWindow = activePrivateChats.get(username);
+            chatWindow.classList.remove('minimized');
+            // Focus input
+            setTimeout(() => {
+                const input = document.getElementById(`private-input-${username}`);
+                if (input) input.focus();
+            }, 100);
+        }
+
+        function closePrivateChat(username, event) {
+            if (event) event.stopPropagation();
+            const chatWindow = activePrivateChats.get(username);
+            chatWindow.remove();
+            activePrivateChats.delete(username);
+            
+            // Update localStorage
+            const activeChats = Array.from(activePrivateChats.keys());
+            localStorage.setItem('activePrivateChats', JSON.stringify(activeChats));
+        }
+
+        function handlePrivateMessageInput(event, targetUsername) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                const input = document.getElementById(`private-input-${targetUsername}`);
+                const message = input.value.trim();
+                
+                if (message) {
+                    sendPrivateMessage(targetUsername, message);
+                    input.value = '';
+                }
+            }
+        }
+
+        function sendPrivateMessage(targetUsername, message) {
+            fetch('/send-private-message', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    target_username: targetUsername,
+                    message: message
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    appendPrivateMessage(targetUsername, '{{ session["username"] }}', message, true);
+                } else {
+                    alert(data.message || 'Failed to send message');
+                }
+            })
+            .catch(error => {
+                console.error('Error sending private message:', error);
+                alert('Error sending message');
+            });
+        }
+
+        function formatTimeAgo(timestamp) {
+            const now = new Date();
+            const messageDate = new Date(timestamp);
+            const diffInSeconds = Math.floor((now - messageDate) / 1000);
+            
+            if (diffInSeconds < 60) {
+                return 'just now';
+            }
+            
+            const diffInMinutes = Math.floor(diffInSeconds / 60);
+            if (diffInMinutes < 60) {
+                return `${diffInMinutes}m ago`;
+            }
+            
+            const diffInHours = Math.floor(diffInMinutes / 60);
+            if (diffInHours < 24) {
+                return `${diffInHours}h ago`;
+            }
+            
+            const diffInDays = Math.floor(diffInHours / 24);
+            if (diffInDays < 7) {
+                return `${diffInDays}d ago`;
+            }
+            
+            return messageDate.toLocaleDateString();
+        }
+
+        function updateMessageTimes() {
+            document.querySelectorAll('.message-timestamp').forEach(timestamp => {
+                const originalTime = timestamp.getAttribute('data-timestamp');
+                if (originalTime) {
+                    timestamp.textContent = formatTimeAgo(originalTime);
+                }
+            });
+        }
+
+        // Update timestamps every minute
+        setInterval(updateMessageTimes, 60000);
+
+        function appendPrivateMessage(chatUsername, senderUsername, message, isOutgoing) {
+            const messagesContainer = document.getElementById(`private-messages-${chatUsername}`);
+            const timestamp = new Date().toISOString();
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `flex ${isOutgoing ? 'justify-end' : 'justify-start'} mb-2`;
+            messageDiv.innerHTML = `
+                <div class="${isOutgoing ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-800'} rounded-lg px-3 py-2 max-w-[70%]">
+                    <p class="text-sm">${message}</p>
+                    <div class="flex justify-between items-center mt-1">
+                        <span class="text-xs ${isOutgoing ? 'text-blue-100' : 'text-gray-500'}">${senderUsername}</span>
+                        <span class="text-xs ${isOutgoing ? 'text-blue-100' : 'text-gray-500'} message-timestamp ml-2" 
+                              data-timestamp="${timestamp}">${formatTimeAgo(timestamp)}</span>
+                    </div>
+                </div>
+            `;
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+            // Get existing messages first
+            const existingMessages = getPrivateChatMessages(chatUsername);
+            
+            // Add new message to existing messages
+            existingMessages.push({
+                sender: senderUsername,
+                message: message,
+                isOutgoing: isOutgoing,
+                timestamp: timestamp
+            });
+
+            // Save updated messages array
+            savePrivateChat(chatUsername, existingMessages);
+            
+            console.log(`Saved messages for ${chatUsername}:`, existingMessages);
+        }
+
+        function savePrivateChat(username, messages) {
+            try {
+                const savedChats = JSON.parse(localStorage.getItem('privateChats') || '{}');
+                savedChats[username] = messages || [];
+                localStorage.setItem('privateChats', JSON.stringify(savedChats));
+                
+                // Save active chat windows
+                const activeChats = Array.from(activePrivateChats.keys());
+                localStorage.setItem('activePrivateChats', JSON.stringify(activeChats));
+                
+                console.log(`Updated saved chats for ${username}:`, savedChats[username]);
+            } catch (error) {
+                console.error('Error saving private chat:', error);
+            }
+        }
+
+        function getPrivateChatMessages(username) {
+            try {
+                const savedChats = JSON.parse(localStorage.getItem('privateChats') || '{}');
+                const messages = savedChats[username] || [];
+                console.log(`Retrieved messages for ${username}:`, messages);
+                return messages;
+            } catch (error) {
+                console.error('Error getting private chat messages:', error);
+                return [];
+            }
+        }
+
+        function restorePrivateChats() {
+            try {
+                const activeChats = JSON.parse(localStorage.getItem('activePrivateChats') || '[]');
+                console.log('Restoring private chats:', activeChats);
+                
+                activeChats.forEach(username => {
+                    // First create the chat window
+                    openPrivateChat(username);
+                    
+                    // Then restore messages
+                    const messages = getPrivateChatMessages(username);
+                    console.log(`Restoring messages for ${username}:`, messages);
+                    
+                    if (messages && messages.length > 0) {
+                        const messagesContainer = document.getElementById(`private-messages-${username}`);
+                        if (messagesContainer) {
+                            messages.forEach(msg => {
+                                const messageDiv = document.createElement('div');
+                                messageDiv.className = `flex ${msg.isOutgoing ? 'justify-end' : 'justify-start'} mb-2`;
+                                messageDiv.innerHTML = `
+                                    <div class="${msg.isOutgoing ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-800'} rounded-lg px-3 py-2 max-w-[70%]">
+                                        <p class="text-sm">${msg.message}</p>
+                                        <div class="flex justify-between items-center mt-1">
+                                            <span class="text-xs ${msg.isOutgoing ? 'text-blue-100' : 'text-gray-500'}">${msg.sender}</span>
+                                            <span class="text-xs ${msg.isOutgoing ? 'text-blue-100' : 'text-gray-500'} message-timestamp ml-2" 
+                                                  data-timestamp="${msg.timestamp}">${formatTimeAgo(msg.timestamp)}</span>
+                                        </div>
+                                    </div>
+                                `;
+                                messagesContainer.appendChild(messageDiv);
+                            });
+                            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error restoring private chats:', error);
+            }
+        }
     </script>
 </head>
 <body class="bg-gray-100 min-h-screen">
@@ -1105,9 +1606,6 @@
                             <div class="flex items-center mt-2">
                                 <span class="text-xs {{ 'bg-yellow-100 text-yellow-800' if room.is_private else 'bg-green-100 text-green-800' }} px-2 py-1 rounded">
                                     {{ 'Private' if room.is_private else 'Public' }}
-                                </span>
-                                <span class="text-xs text-gray-500 ml-2">
-                                    Created {{ room.created_at|datetime }}
                                 </span>
                             </div>
                         </div>
@@ -1175,10 +1673,24 @@
                                class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
                         <p class="text-sm text-gray-500 mt-1">Leave empty for public room</p>
                     </div>
-                    <button type="submit" class="w-full bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600">
-                        Create Room
-                    </button>
+                    <button type="submit" class="w-full bg-emerald-500 text-white py-2 px-4 rounded hover:bg-emerald-600 transition duration-200">Create Room</button>
                 </form>
+            </div>
+
+            <!-- Users Box -->
+            <div class="sidebar-box mt-4">
+                <div class="flex justify-between items-center mb-4 cursor-pointer" onclick="toggleUsersList()">
+                    <h2 class="text-xl font-semibold text-gray-800">Registered Users</h2>
+                    <div class="flex items-center">
+                        <span id="users-count" class="text-sm text-gray-500 mr-2">0 users</span>
+                        <button type="button" id="toggle-users" class="text-gray-500 hover:text-gray-700">
+                            <i class="fas fa-chevron-down"></i>
+                        </button>
+                    </div>
+                </div>
+                <div id="users-list" class="space-y-2 hidden">
+                    <!-- Users will be loaded here -->
+                </div>
             </div>
         </div>
     </div>
