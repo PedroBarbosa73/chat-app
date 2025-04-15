@@ -21,4 +21,12 @@ ENV/
 *.log
 
 # Local development
-instance/ 
+instance/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Flask migrations
+migrations/ 
