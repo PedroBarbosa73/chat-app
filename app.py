@@ -53,6 +53,7 @@ try:
         connection_string += '?connection_timeout=30&command_timeout=30&pool_size=20&pool_timeout=30'
     else:
         # Local development connection string modifications
+        connection_string = connection_string.replace('ODBC+Driver+18+for+SQL+Server', 'ODBC+Driver+17+for+SQL+Server')
         connection_string = connection_string.replace('?', '?TrustServerCertificate=yes&connection_timeout=30&command_timeout=30&pool_size=20&pool_timeout=30&')
     
     logger.info("Database connection string configured successfully")
@@ -75,22 +76,91 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 app.config['SQLALCHEMY_POOL_PRE_PING'] = True  # Enable connection testing before use
 db = SQLAlchemy(app)
 
-# Initialize database on first request
-_is_first_request = True
+# Global variables for blob storage
+blob_service_client = None
+container_client = None
 
-@app.before_request
-def initialize_database():
-    global _is_first_request
-    if _is_first_request:
-        _is_first_request = False
-        # Create all database tables
+def initialize_blob_storage():
+    global blob_service_client, container_client
+    max_retries = 3
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            logger.info("Initializing Azure Blob Storage...")
+            connection_string = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
+            if not connection_string:
+                raise ValueError("AZURE_STORAGE_CONNECTION_STRING not found in environment variables")
+            
+            blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+            container_name = "chat-media"
+            
+            # Create container if it doesn't exist
+            container_client = blob_service_client.get_container_client(container_name)
+            try:
+                container_client.get_container_properties()
+                logger.info(f"Container '{container_name}' exists and is accessible")
+                return True
+            except Exception as container_error:
+                logger.warning(f"Container '{container_name}' does not exist, creating it... Error: {str(container_error)}")
+                container_client = blob_service_client.create_container(container_name)
+                logger.info(f"Container '{container_name}' created successfully")
+                return True
+                
+        except Exception as e:
+            retry_count += 1
+            logger.error(f"Error initializing Azure Blob Storage (attempt {retry_count}/{max_retries}): {str(e)}")
+            if retry_count == max_retries:
+                logger.error("Failed to initialize blob storage after maximum retries")
+                return False
+            time.sleep(1)  # Wait before retrying
+
+# Initialize database and storage on startup
+with app.app_context():
+    try:
+        # Create all tables if they don't exist
         db.create_all()
-        logger.info("Database tables created successfully")
+        logger.info("Tables created/updated successfully")
+        
+        # Initialize blob storage
+        if not initialize_blob_storage():
+            logger.error("Failed to initialize blob storage")
+        
+        # Create private_messages table
+        with db.engine.connect() as connection:
+            connection.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'private_messages')
+                BEGIN
+                    CREATE TABLE private_messages (
+                        id INT IDENTITY(1,1) PRIMARY KEY,
+                        sender_username VARCHAR(50) NOT NULL,
+                        receiver_username VARCHAR(50) NOT NULL,
+                        content NVARCHAR(MAX) NOT NULL,
+                        created_at DATETIME NOT NULL DEFAULT GETDATE(),
+                        CONSTRAINT FK_PrivateMessages_SenderUser FOREIGN KEY (sender_username) REFERENCES users(username),
+                        CONSTRAINT FK_PrivateMessages_ReceiverUser FOREIGN KEY (receiver_username) REFERENCES users(username)
+                    )
+                END
+            """))
+            connection.commit()
+        logger.info("Private messages table created/verified successfully")
+    except Exception as e:
+        logger.error(f"Error during initialization: {str(e)}")
+        raise e
 
 # Make session permanent by default
 @app.before_request
 def make_session_permanent():
     session.permanent = True
+
+# Initialize storage on startup
+def initialize_storage():
+    with app.app_context():
+        if not initialize_blob_storage():
+            logger.error("Failed to initialize blob storage")
+
+# Register the initialization function
+app.before_request_funcs.setdefault(None, []).append(initialize_storage)
 
 class Room(db.Model):
     __tablename__ = 'rooms'
@@ -200,54 +270,6 @@ class FavoriteRoom(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
-# Global variables for blob storage
-blob_service_client = None
-container_client = None
-
-def initialize_blob_storage():
-    global blob_service_client, container_client
-    max_retries = 3
-    retry_count = 0
-    
-    while retry_count < max_retries:
-        try:
-            logger.info("Initializing Azure Blob Storage...")
-            connection_string = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
-            if not connection_string:
-                raise ValueError("AZURE_STORAGE_CONNECTION_STRING not found in environment variables")
-            
-            blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-            container_name = "chat-media"
-            
-            # Create container if it doesn't exist
-            container_client = blob_service_client.get_container_client(container_name)
-            try:
-                container_client.get_container_properties()
-                logger.info(f"Container '{container_name}' exists and is accessible")
-                return True
-            except Exception as container_error:
-                logger.warning(f"Container '{container_name}' does not exist, creating it... Error: {str(container_error)}")
-                container_client = blob_service_client.create_container(container_name)
-                logger.info(f"Container '{container_name}' created successfully")
-                return True
-                
-        except Exception as e:
-            retry_count += 1
-            logger.error(f"Error initializing Azure Blob Storage (attempt {retry_count}/{max_retries}): {str(e)}")
-            if retry_count == max_retries:
-                logger.error("Failed to initialize blob storage after maximum retries")
-                return False
-            time.sleep(1)  # Wait before retrying
-
-# Initialize storage on startup
-def initialize_storage():
-    with app.app_context():
-        if not initialize_blob_storage():
-            logger.error("Failed to initialize blob storage")
-
-# Register the initialization function
-app.before_request_funcs.setdefault(None, []).append(initialize_storage)
-
 def ensure_blob_storage():
     global blob_service_client, container_client
     if blob_service_client is None or container_client is None:
@@ -281,35 +303,6 @@ def generate_sas_token(blob_name):
     except Exception as e:
         logger.error(f"Error generating SAS token: {str(e)}")
         raise
-
-# Create tables if they don't exist
-with app.app_context():
-    try:
-        # Create all tables if they don't exist
-        db.create_all()
-        logger.info("Tables created/updated successfully")
-        
-        # Create private_messages table
-        with db.engine.connect() as connection:
-            connection.execute(text("""
-                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'private_messages')
-                BEGIN
-                    CREATE TABLE private_messages (
-                        id INT IDENTITY(1,1) PRIMARY KEY,
-                        sender_username VARCHAR(50) NOT NULL,
-                        receiver_username VARCHAR(50) NOT NULL,
-                        content NVARCHAR(MAX) NOT NULL,
-                        created_at DATETIME NOT NULL DEFAULT GETDATE(),
-                        CONSTRAINT FK_PrivateMessages_SenderUser FOREIGN KEY (sender_username) REFERENCES users(username),
-                        CONSTRAINT FK_PrivateMessages_ReceiverUser FOREIGN KEY (receiver_username) REFERENCES users(username)
-                    )
-                END
-            """))
-            connection.commit()
-        logger.info("Private messages table created/verified successfully")
-    except Exception as e:
-        logger.error(f"Error creating private messages table: {str(e)}")
-        raise e
 
 @app.route('/')
 def home():
