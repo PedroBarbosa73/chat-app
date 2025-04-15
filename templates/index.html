@@ -934,15 +934,25 @@
                 });
             }
 
-            // Initial users count
+            // Initial users count with error handling
             fetch('/users')
-                .then(response => response.json())
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
                 .then(data => {
                     if (data.success) {
                         document.getElementById('users-count').textContent = `${data.users.length} users`;
+                    } else {
+                        document.getElementById('users-count').textContent = 'Error loading users';
                     }
                 })
-                .catch(error => console.error('Error getting initial users count:', error));
+                .catch(error => {
+                    console.error('Error getting initial users count:', error);
+                    document.getElementById('users-count').textContent = 'Error loading users';
+                });
 
             initializePrivateChat();
 
@@ -1150,9 +1160,15 @@
                 usersList.classList.remove('hidden');
                 toggleButton.innerHTML = '<i class="fas fa-chevron-up"></i>';
                 
-                // Fetch users
+                // Fetch users with error handling
                 fetch('/users')
-                    .then(response => response.json())
+                    .then(response => {
+                        console.log('Users response status:', response.status);
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+                        return response.json();
+                    })
                     .then(data => {
                         console.log('Users response:', data);
                         if (data.success) {
@@ -1195,7 +1211,7 @@
                         usersList.innerHTML = `
                             <div class="text-red-500 text-center py-2">
                                 <i class="fas fa-exclamation-circle mr-2"></i>
-                                Error loading users
+                                Error loading users. Please try refreshing the page.
                             </div>
                         `;
                     });

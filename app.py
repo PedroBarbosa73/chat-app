@@ -5,11 +5,12 @@ import os
 from dotenv import load_dotenv
 import logging
 from datetime import datetime, timedelta, timezone
-from sqlalchemy import Unicode
+from sqlalchemy import Unicode, text
 from werkzeug.security import generate_password_hash, check_password_hash
 import time
 from azure.storage.blob import BlobServiceClient, BlobSasPermissions, generate_blob_sas
 import mimetypes
+import pyodbc
 
 load_dotenv()
 
@@ -267,9 +268,28 @@ with app.app_context():
         # Create all tables if they don't exist
         db.create_all()
         logger.info("Tables created/updated successfully")
+        
+        # Create private_messages table
+        with db.engine.connect() as connection:
+            connection.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'private_messages')
+                BEGIN
+                    CREATE TABLE private_messages (
+                        id INT IDENTITY(1,1) PRIMARY KEY,
+                        sender_username VARCHAR(50) NOT NULL,
+                        receiver_username VARCHAR(50) NOT NULL,
+                        content NVARCHAR(MAX) NOT NULL,
+                        created_at DATETIME NOT NULL DEFAULT GETDATE(),
+                        CONSTRAINT FK_PrivateMessages_SenderUser FOREIGN KEY (sender_username) REFERENCES users(username),
+                        CONSTRAINT FK_PrivateMessages_ReceiverUser FOREIGN KEY (receiver_username) REFERENCES users(username)
+                    )
+                END
+            """))
+            connection.commit()
+        logger.info("Private messages table created/verified successfully")
     except Exception as e:
-        logger.error(f"Error during table creation: {str(e)}")
-        raise
+        logger.error(f"Error creating private messages table: {str(e)}")
+        raise e
 
 @app.route('/')
 def home():
@@ -724,6 +744,89 @@ def delete_room(room_id):
         db.session.rollback()
         logging.error(f"Error deleting room: {str(e)}")
         return jsonify({'success': False, 'message': 'Error deleting room'}), 500
+
+@app.route('/users', methods=['GET'])
+def get_users():
+    try:
+        # Check if user is logged in
+        if 'user_id' not in session:
+            logger.warning("User not logged in when accessing /users endpoint")
+            return jsonify({
+                'success': False,
+                'error': 'Please login first'
+            }), 401
+
+        logger.debug("Fetching users from database...")
+        logger.debug(f"Current session: {dict(session)}")  # Log session contents
+        
+        try:
+            users = User.query.order_by(User.username).all()
+            logger.debug(f"Found {len(users)} users")
+            
+            user_list = [user.to_dict() for user in users]
+            logger.debug(f"User list: {user_list}")
+            
+            return jsonify({
+                'success': True,
+                'users': user_list
+            })
+        except Exception as db_error:
+            logger.error(f"Database error while fetching users: {str(db_error)}")
+            return jsonify({
+                'success': False,
+                'error': 'Database error while fetching users'
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"Error in get_users endpoint: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Server error'
+        }), 500
+
+@app.route('/send-private-message', methods=['POST'])
+def send_private_message():
+    if 'username' not in session:
+        return jsonify({'success': False, 'message': 'Not authenticated'})
+    
+    data = request.get_json()
+    sender = session['username']
+    target_username = data.get('target_username')
+    message = data.get('message')
+    
+    if not target_username or not message:
+        return jsonify({'success': False, 'message': 'Missing required fields'})
+    
+    try:
+        with db.engine.connect() as connection:
+            # Check if target user exists
+            result = connection.execute(
+                text("SELECT id FROM users WHERE username = :username"),
+                {"username": target_username}
+            ).fetchone()
+            
+            if not result:
+                return jsonify({'success': False, 'message': 'User not found'})
+            
+            # Store private message in database
+            connection.execute(
+                text("""
+                    INSERT INTO private_messages (sender_username, receiver_username, content)
+                    VALUES (:sender, :receiver, :content)
+                """),
+                {
+                    "sender": sender,
+                    "receiver": target_username,
+                    "content": message
+                }
+            )
+            connection.commit()
+            
+            return jsonify({'success': True})
+            
+    except Exception as e:
+        logger.error(f"Error sending private message: {str(e)}")
+        return jsonify({'success': False, 'message': 'Server error'})
 
 if __name__ == '__main__':
     try:
