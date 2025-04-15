@@ -75,6 +75,17 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 app.config['SQLALCHEMY_POOL_PRE_PING'] = True  # Enable connection testing before use
 db = SQLAlchemy(app)
 
+# Replace @app.before_first_request with a flag and @app.before_request
+_is_first_request = True
+
+@app.before_request
+def before_first_request():
+    global _is_first_request
+    if _is_first_request:
+        _is_first_request = False
+        # Put your initialization code here
+        create_table()
+
 # Make session permanent by default
 @app.before_request
 def make_session_permanent():
