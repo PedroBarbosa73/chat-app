@@ -279,7 +279,7 @@
                     messageForm.style.display = 'block';
                     messageForm.style.visibility = 'visible';
                     messageForm.style.opacity = '1';
-                    
+
                     if (!loadMore) {
                         messageList.innerHTML = '';
                         currentPage = 1;
@@ -373,8 +373,8 @@
             if (isPrivate) {
                 if (!isRoomAuthorized(roomId)) {
                     console.log('Room is private and not authorized, showing join modal');
-                    showJoinRoomModal(roomId);
-                    return;
+                showJoinRoomModal(roomId);
+                return;
                 }
             }
 
@@ -495,7 +495,7 @@
                     hideJoinRoomModal();
                     // After successful join, select the room
                     selectRoom(data.room_id, data.is_private);
-                } else {
+                        } else {
                     console.error('Error joining room:', data.message);
                     alert(data.message || 'Failed to join room');
                 }
@@ -1424,11 +1424,11 @@
 
         function sendPrivateMessage(targetUsername, message) {
             fetch('/send-private-message', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
                     target_username: targetUsername,
                     message: message
                 })
@@ -1594,7 +1594,7 @@
         }
 
         function startPrivateMessagePolling() {
-            // Trigger deployment - Private message polling
+            // Trigger deployment - Testing Azure credentials
             console.log('Starting private message polling');
             // Poll more frequently (every 1 second) for better responsiveness
             setInterval(async () => {
@@ -1689,7 +1689,7 @@
     <div class="back-button" id="backButton" onclick="goBackToRooms()">
         <i class="fas fa-arrow-left text-gray-600"></i>
     </div>
-
+    
     <div class="main-container">
         <!-- Left Sidebar - Favorites -->
         <div class="left-sidebar">
@@ -1710,53 +1710,53 @@
         <div class="main-content">
             <!-- Rooms List View -->
             <div id="rooms-view">
-                <div class="flex justify-between items-center mb-8">
-                    <h1 class="text-3xl font-bold text-gray-800">Local Chat Rooms</h1>
-                    <div class="flex items-center space-x-4">
-                        <span class="text-gray-600">Welcome, {{ session['username'] }}</span>
-                        <a href="{{ url_for('logout') }}" class="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600">Logout</a>
-                    </div>
-                </div>
-
-                <!-- Available Rooms Section -->
-                <div class="bg-white rounded-lg shadow-md p-6">
-                    <div class="flex justify-between items-center mb-4">
-                        <h2 class="text-xl font-semibold text-gray-800">Available Rooms</h2>
-                        <span class="text-sm text-gray-500">{{ rooms|length }} rooms total</span>
-                    </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {% for room in rooms %}
-                        <div class="room-item cursor-pointer bg-gray-50 p-4 rounded-lg hover:bg-gray-100 transition-colors duration-200"
-                             onclick="selectRoom({{ room.id }}, {{ room.is_private|tojson }})"
-                             data-room-id="{{ room.id }}">
-                            <div class="flex justify-between items-start">
-                                <h3 class="font-medium text-gray-800">{{ room.name }}</h3>
-                                <i class="favorite-star cursor-pointer {{ 'fas' if room.id in favorite_room_ids else 'far' }} fa-star text-yellow-400"
-                                   onclick="toggleFavorite({{ room.id }}, event)"></i>
-                            </div>
-                            <div class="flex items-center mt-2">
-                                <span class="text-xs {{ 'bg-yellow-100 text-yellow-800' if room.is_private else 'bg-green-100 text-green-800' }} px-2 py-1 rounded">
-                                    {{ 'Private' if room.is_private else 'Public' }}
-                                </span>
-                            </div>
-                        </div>
-                        {% endfor %}
-                    </div>
+            <div class="flex justify-between items-center mb-8">
+                <h1 class="text-3xl font-bold text-gray-800">Local Chat Rooms</h1>
+                <div class="flex items-center space-x-4">
+                    <span class="text-gray-600">Welcome, {{ session['username'] }}</span>
+                    <a href="{{ url_for('logout') }}" class="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600">Logout</a>
                 </div>
             </div>
+
+            <!-- Available Rooms Section -->
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold text-gray-800">Available Rooms</h2>
+                    <span class="text-sm text-gray-500">{{ rooms|length }} rooms total</span>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {% for room in rooms %}
+                    <div class="room-item cursor-pointer bg-gray-50 p-4 rounded-lg hover:bg-gray-100 transition-colors duration-200"
+                         onclick="selectRoom({{ room.id }}, {{ room.is_private|tojson }})"
+                         data-room-id="{{ room.id }}">
+                        <div class="flex justify-between items-start">
+                            <h3 class="font-medium text-gray-800">{{ room.name }}</h3>
+                            <i class="favorite-star cursor-pointer {{ 'fas' if room.id in favorite_room_ids else 'far' }} fa-star text-yellow-400"
+                               onclick="toggleFavorite({{ room.id }}, event)"></i>
+                        </div>
+                        <div class="flex items-center mt-2">
+                            <span class="text-xs {{ 'bg-yellow-100 text-yellow-800' if room.is_private else 'bg-green-100 text-green-800' }} px-2 py-1 rounded">
+                                {{ 'Private' if room.is_private else 'Public' }}
+                            </span>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                    </div>
+                </div>
 
             <!-- Chat View -->
             <div id="chat-area" class="room-view">
                 <div class="flex justify-between items-center bg-white rounded-lg shadow p-4 mb-4">
-                    <div>
+                        <div>
                         <h2 id="current-room-name" class="text-xl font-bold"></h2>
                         <span id="room-status" class="text-sm text-gray-500"></span>
-                    </div>
+                        </div>
                     <button onclick="goBackToRooms()" class="bg-gray-100 hover:bg-gray-200 text-gray-600 px-4 py-2 rounded-lg flex items-center">
                         <i class="fas fa-arrow-left mr-2"></i>
                         Back to Rooms
                     </button>
-                </div>
+                                </div>
                 <div id="message-list" class="space-y-4 mb-4" style="max-height: calc(100vh - 300px); overflow-y: auto;"></div>
                 <form id="message-form" class="bg-white rounded-lg shadow p-4" onsubmit="event.preventDefault(); sendMessage();">
                     <input type="hidden" id="room_id" name="room_id" value="">
@@ -1777,14 +1777,14 @@
                     </div>
                     <div id="media-preview" class="hidden mt-2 p-2 bg-gray-50 rounded-lg">
                         <div class="flex justify-between items-center">
-                            <div id="preview-content"></div>
+                                <div id="preview-content"></div>
                             <button type="button" onclick="removeMedia()" class="text-red-500 hover:text-red-600">
-                                <i class="fas fa-times"></i>
-                            </button>
+                                    <i class="fas fa-times"></i>
+                                </button>
+                            </div>
                         </div>
-                    </div>
-                    <div id="upload-status" class="hidden mt-2 text-sm"></div>
-                </form>
+                        <div id="upload-status" class="hidden mt-2 text-sm"></div>
+                    </form>
             </div>
         </div>
 
