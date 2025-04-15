@@ -877,10 +877,15 @@ def get_private_messages():
 
 if __name__ == '__main__':
     try:
-        # Azure Web Apps expects port 8000 when running in container
-        port = int(os.environ.get('WEBSITES_PORT', '8000'))
-        print(f"Starting server on port {port}")
-        app.run(host='0.0.0.0', port=port)
+        print("\n=== Starting Server ===")
+        print("Access URLs:")
+        print("Local: http://127.0.0.1:5000")
+        print("Network: http://192.168.1.78:5000")
+        print("======================\n")
+        
+        # Disable debug mode for network access
+        app.config['DEBUG'] = False
+        app.run(host='0.0.0.0', port=5000, threaded=True)
     except Exception as e:
         print(f"Error starting server: {e}")
         raise 

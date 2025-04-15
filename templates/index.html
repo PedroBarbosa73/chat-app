@@ -129,6 +129,22 @@
             justify-content: space-between;
             align-items: center;
         }
+        /* Add new styles for notification */
+        .chat-window-header.has-notification {
+            background: #dc2626;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.8;
+            }
+            100% {
+                opacity: 1;
+            }
+        }
         .chat-window-messages {
             height: 250px;
             overflow-y: auto;
@@ -1391,6 +1407,8 @@
         function maximizeChatWindow(username) {
             const chatWindow = activePrivateChats.get(username);
             chatWindow.classList.remove('minimized');
+            // Clear notification when maximizing
+            clearNotificationForUser(username);
             // Focus input
             setTimeout(() => {
                 const input = document.getElementById(`private-input-${username}`);
@@ -1628,6 +1646,12 @@
                                     lastMessageTimestamps.set(username, latestTimestamp);
                                     console.log(`Updated last timestamp for ${username} to:`, latestTimestamp);
 
+                                    // Show notification if there are incoming messages
+                                    const hasIncomingMessages = newMessages.some(msg => !msg.isOutgoing);
+                                    if (hasIncomingMessages) {
+                                        showNotificationForUser(username);
+                                    }
+
                                     // Display new messages
                                     newMessages.forEach(msg => {
                                         const messageDiv = document.createElement('div');
@@ -1645,11 +1669,8 @@
                                         messagesContainer.appendChild(messageDiv);
                                     });
                                     
-                                    // Only scroll if user is at bottom
-                                    const isAtBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop <= messagesContainer.clientHeight + 50;
-                                    if (isAtBottom) {
-                                        messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                                    }
+                                    // Always scroll to bottom when new messages arrive
+                                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
                                     
                                     // Update message times
                                     updateMessageTimes();
@@ -1675,6 +1696,32 @@
                     input.value = '';
                     input.focus();
                 }
+            }
+        }
+
+        function showNotificationForUser(username) {
+            const chatWindow = activePrivateChats.get(username);
+            if (!chatWindow || chatWindow.classList.contains('minimized')) {
+                // If chat is minimized or doesn't exist, show notification
+                if (chatWindow) {
+                    const header = chatWindow.querySelector('.chat-window-header');
+                    header.classList.add('has-notification');
+                } else {
+                    // If chat window doesn't exist, create it with notification
+                    openPrivateChat(username).then(() => {
+                        const newWindow = activePrivateChats.get(username);
+                        const header = newWindow.querySelector('.chat-window-header');
+                        header.classList.add('has-notification');
+                    });
+                }
+            }
+        }
+
+        function clearNotificationForUser(username) {
+            const chatWindow = activePrivateChats.get(username);
+            if (chatWindow) {
+                const header = chatWindow.querySelector('.chat-window-header');
+                header.classList.remove('has-notification');
             }
         }
     </script>
