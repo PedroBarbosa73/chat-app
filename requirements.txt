@@ -2,4 +2,7 @@ Flask==3.0.2
 Flask-SQLAlchemy==3.1.1
 python-dotenv==1.0.1
 pyodbc==5.0.1
-gunicorn==21.2.0 
+gunicorn==21.2.0
+azure-storage-blob==12.19.0
+azure-core==1.29.5
+azure-identity==1.15.0 

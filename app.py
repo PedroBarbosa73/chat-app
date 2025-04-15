@@ -697,26 +697,10 @@ def upload_media():
 
 if __name__ == '__main__':
     try:
-        # Get local IP address
-        import socket
-        hostname = socket.gethostname()
-        local_ip = socket.gethostbyname(hostname)
-        
-        # Use port from environment variable or default to 8080
-        port = int(os.getenv('WEBSITES_PORT', 8080))
-        print(f"\nAccess the chat app at:")
-        print(f"Local: http://localhost:{port}")
-        print(f"Network: http://{local_ip}:{port}\n")
-        
-        # Configure Flask to accept external connections with better error handling
-        logger.info(f"Starting server on port {port}...")
-        app.run(
-            host='0.0.0.0',
-            port=port,
-            debug=True,
-            use_reloader=True,
-            threaded=True
-        )
+        # Azure Web Apps expects port 8000 when running in container
+        port = int(os.environ.get('WEBSITES_PORT', '8000'))
+        print(f"Starting server on port {port}")
+        app.run(host='0.0.0.0', port=port)
     except Exception as e:
-        logger.error(f"Error starting server: {str(e)}")
+        print(f"Error starting server: {e}")
         raise 
