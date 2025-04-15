@@ -218,11 +218,15 @@ def initialize_blob_storage():
                 return False
             time.sleep(1)  # Wait before retrying
 
-@app.before_first_request
-def setup_storage():
-    if not initialize_blob_storage():
-        logger.error("Failed to initialize blob storage")
-        
+# Initialize storage on startup
+def initialize_storage():
+    with app.app_context():
+        if not initialize_blob_storage():
+            logger.error("Failed to initialize blob storage")
+
+# Register the initialization function
+app.before_request_funcs.setdefault(None, []).append(initialize_storage)
+
 def ensure_blob_storage():
     global blob_service_client, container_client
     if blob_service_client is None or container_client is None:
