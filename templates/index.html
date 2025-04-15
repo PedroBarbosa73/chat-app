@@ -1329,6 +1329,10 @@
                 if (data.success) {
                     const messagesContainer = document.getElementById(`private-messages-${targetUsername}`);
                     if (messagesContainer && data.messages.length > 0) {
+                        // Initialize the last message timestamp
+                        const latestTimestamp = Math.max(...data.messages.map(msg => new Date(msg.timestamp).getTime()));
+                        lastMessageTimestamps.set(targetUsername, latestTimestamp);
+                        
                         data.messages.forEach(msg => {
                             const messageDiv = document.createElement('div');
                             messageDiv.className = `flex ${msg.isOutgoing ? 'justify-end' : 'justify-start'} mb-2`;
@@ -1427,7 +1431,10 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
+                    const timestamp = new Date().toISOString();
                     appendPrivateMessage(targetUsername, '{{ session["username"] }}', message, true);
+                    // Update the last message timestamp
+                    lastMessageTimestamps.set(targetUsername, new Date(timestamp).getTime());
                 } else {
                     alert(data.message || 'Failed to send message');
                 }
@@ -1585,25 +1592,27 @@
             setInterval(async () => {
                 for (const [username, chatWindow] of activePrivateChats) {
                     try {
-                        // Get the last message timestamp for this chat
-                        const lastTimestamp = lastMessageTimestamps.get(username) || null;
-                        
                         const response = await fetch(`/get-private-messages?username=${encodeURIComponent(username)}`);
                         const data = await response.json();
                         
                         if (data.success && data.messages.length > 0) {
                             const messagesContainer = document.getElementById(`private-messages-${username}`);
                             if (messagesContainer) {
-                                // Filter out messages we already have, using ISO string comparison
-                                const newMessages = data.messages.filter(msg => {
-                                    return !lastTimestamp || new Date(msg.timestamp) > new Date(lastTimestamp);
-                                });
+                                // Get the last message timestamp we have
+                                const lastTimestamp = lastMessageTimestamps.get(username);
                                 
+                                // Filter and display only new messages
+                                const newMessages = data.messages.filter(msg => {
+                                    const msgTimestamp = new Date(msg.timestamp).getTime();
+                                    return !lastTimestamp || msgTimestamp > lastTimestamp;
+                                });
+
                                 if (newMessages.length > 0) {
-                                    // Update the last timestamp for this chat
-                                    lastMessageTimestamps.set(username, newMessages[newMessages.length - 1].timestamp);
-                                    
-                                    // Append new messages
+                                    // Update the last message timestamp
+                                    const latestTimestamp = Math.max(...newMessages.map(msg => new Date(msg.timestamp).getTime()));
+                                    lastMessageTimestamps.set(username, latestTimestamp);
+
+                                    // Display new messages
                                     newMessages.forEach(msg => {
                                         const messageDiv = document.createElement('div');
                                         messageDiv.className = `flex ${msg.isOutgoing ? 'justify-end' : 'justify-start'} mb-2`;

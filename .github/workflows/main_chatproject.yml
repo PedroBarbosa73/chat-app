@@ -8,6 +8,17 @@ on:
   push:
     branches:
       - main
+    paths:
+      - '**.py'
+      - '**.html'
+      - '**.css'
+      - '**.js'
+      - 'requirements.txt'
+      - '.env'
+      - 'static/**'
+      - 'templates/**'
+      - '!**.md'
+      - '!.gitignore'
   workflow_dispatch:
 
 jobs:
@@ -37,11 +48,29 @@ jobs:
           pip install -r requirements.txt
         
       # Optional: Add step to run tests here (PyTest, Django test suites, etc.)
+      
+      - name: Check for deployment changes
+        id: check_changes
+        run: |
+          # List of files that require deployment when changed
+          DEPLOY_PATTERNS=("*.py" "*.html" "*.css" "*.js" "requirements.txt" ".env" "static/*" "templates/*")
+          CHANGES_DETECTED=false
+          
+          for pattern in "${DEPLOY_PATTERNS[@]}"; do
+            if git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep -q "$pattern"; then
+              CHANGES_DETECTED=true
+              break
+            fi
+          done
+          
+          echo "changes_detected=$CHANGES_DETECTED" >> $GITHUB_OUTPUT
 
       - name: Zip artifact for deployment
+        if: steps.check_changes.outputs.changes_detected == 'true'
         run: zip release.zip ./* -r
 
       - name: Upload artifact for deployment jobs
+        if: steps.check_changes.outputs.changes_detected == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: python-app
@@ -52,6 +81,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: build
+    if: needs.build.outputs.changes_detected == 'true'
     environment:
       name: 'Production'
       url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
@@ -67,14 +97,13 @@ jobs:
 
       - name: Unzip artifact for deployment
         run: unzip release.zip
-
       
       - name: Login to Azure
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_3E27A70AB0824AB2A3779C2E0F8DF380 }}
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_AAB4AA58D5D9467D8095539E68C4D791 }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_991897CBB01543799A0C155073FF4306 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_991897CBB01943799A0C155073FF4306 }}
 
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
@@ -83,5 +112,4 @@ jobs:
           app-name: 'Chatproject'
           publish-profile: ${{ secrets.AZUREWEBAPP_PUBLISHPROFILE_E0F0F0F0E0F0F0F0E0F0F0F0E0F0F0F0 }}
           package: .
-
       
