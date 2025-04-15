@@ -17,6 +17,13 @@ load_dotenv()
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+# Log Azure environment information
+if 'WEBSITE_SITE_NAME' in os.environ:
+    logger.info("Running on Azure Web App")
+    logger.info(f"Site Name: {os.getenv('WEBSITE_SITE_NAME')}")
+    logger.info(f"Hostname: {os.getenv('WEBSITE_HOSTNAME')}")
+    logger.info(f"Python Version: {os.getenv('PYTHON_VERSION')}")
+
 app = Flask(__name__)
 
 # Custom Jinja filter for datetime formatting
@@ -30,11 +37,27 @@ def format_datetime(value):
 
 # Get connection string from environment variable
 connection_string = os.getenv('AZURE_SQL_CONNECTIONSTRING')
+if not connection_string:
+    logger.error("AZURE_SQL_CONNECTIONSTRING environment variable is not set!")
+    raise ValueError("Database connection string not found in environment variables")
+
 container_name = "chat-media"  # Name of the container for storing media files
 logger.debug(f"Database URL (without password): {connection_string.replace(connection_string.split(':')[2].split('@')[0], '***')}")
 
 # Format connection string for SQL Server with proper encoding and timeout settings
-connection_string = connection_string.replace('?', '?TrustServerCertificate=yes&connect_timeout=30&timeout=30&')
+try:
+    if 'WEBSITE_SITE_NAME' in os.environ:  # Check if running on Azure
+        # Azure-specific connection string modifications
+        connection_string = connection_string.replace('ODBC+Driver+18+for+SQL+Server', 'ODBC+Driver+17+for+SQL+Server')
+    else:
+        # Local development connection string modifications
+        connection_string = connection_string.replace('?', '?TrustServerCertificate=yes&connect_timeout=30&timeout=30&')
+    
+    logger.info("Database connection string configured successfully")
+except Exception as e:
+    logger.error(f"Error configuring database connection string: {str(e)}")
+    raise
+
 app.config['SQLALCHEMY_DATABASE_URI'] = connection_string
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', secrets.token_hex(16))
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -630,8 +653,8 @@ if __name__ == '__main__':
         hostname = socket.gethostname()
         local_ip = socket.gethostbyname(hostname)
         
-        # Use port 8080
-        port = 8080
+        # Use port from environment variable or default to 8080
+        port = int(os.getenv('WEBSITES_PORT', 8080))
         print(f"\nAccess the chat app at:")
         print(f"Local: http://localhost:{port}")
         print(f"Network: http://{local_ip}:{port}\n")
