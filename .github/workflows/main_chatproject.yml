@@ -22,7 +22,7 @@ jobs:
       - name: Set up Python version
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.9'
 
       - name: Create and start virtual environment
         run: |
@@ -33,6 +33,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y unixodbc-dev
+          pip install --upgrade pip
           pip install -r requirements.txt
         
       # Optional: Add step to run tests here (PyTest, Django test suites, etc.)
@@ -80,5 +81,7 @@ jobs:
         id: deploy-to-webapp
         with:
           app-name: 'Chatproject'
+          publish-profile: ${{ secrets.AZUREWEBAPP_PUBLISHPROFILE_E0F0F0F0E0F0F0F0E0F0F0F0E0F0F0F0 }}
+          package: .
 
       
