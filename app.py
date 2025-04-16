@@ -169,14 +169,24 @@ class Message(db.Model):
         # Generate fresh SAS token for media URL if needed
         if self.has_media and self.media_filename:
             try:
-                sas_token = generate_sas_token(self.media_filename)
+                # Check if blob exists first
                 blob_client = container_client.get_blob_client(self.media_filename)
-                data['media_url'] = f"{blob_client.url}?{sas_token}"
+                try:
+                    blob_client.get_blob_properties()
+                    # Blob exists, generate SAS token
+                    sas_token = generate_sas_token(self.media_filename)
+                    data['media_url'] = f"{blob_client.url}?{sas_token}"
+                    logger.info(f"Successfully generated SAS token for blob: {self.media_filename}")
+                except Exception as blob_error:
+                    logger.error(f"Blob not found or inaccessible: {self.media_filename}, Error: {str(blob_error)}")
+                    data['media_url'] = None
+                    data['has_media'] = False  # Mark as no media since blob is missing
             except Exception as e:
-                logger.error(f"Error generating fresh SAS token for {self.media_filename}: {str(e)}")
-                data['media_url'] = self.media_url
+                logger.error(f"Error checking blob and generating SAS token for {self.media_filename}: {str(e)}")
+                data['media_url'] = None
+                data['has_media'] = False
         else:
-            data['media_url'] = self.media_url
+            data['media_url'] = None
             
         return data
 
@@ -205,29 +215,53 @@ def initialize_blob_storage():
             logger.info("Initializing Azure Blob Storage...")
             connection_string = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
             if not connection_string:
-                logger.warning("AZURE_STORAGE_CONNECTION_STRING not found in environment variables")
+                logger.error("AZURE_STORAGE_CONNECTION_STRING not found in environment variables")
                 return False
             
-            blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-            container_name = "chat-media"
+            # Log connection string (without sensitive info)
+            safe_connection_string = connection_string.replace(
+                connection_string.split('AccountKey=')[1].split(';')[0],
+                '***'
+            )
+            logger.info(f"Using storage connection string: {safe_connection_string}")
             
-            # Create container if it doesn't exist
+            blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+            
+            # Verify the service client
+            blob_service_client.get_service_properties()
+            logger.info("Successfully connected to Azure Blob Storage")
+            
+            # Get or create container
+            container_name = "chat-media"
             container_client = blob_service_client.get_container_client(container_name)
+            
             try:
-                container_client.get_container_properties()
-                logger.info(f"Container '{container_name}' exists and is accessible")
-                return True
+                container_properties = container_client.get_container_properties()
+                logger.info(f"Found existing container: {container_name}")
+                logger.info(f"Container last modified: {container_properties.last_modified}")
             except Exception as container_error:
-                logger.warning(f"Container '{container_name}' does not exist, creating it... Error: {str(container_error)}")
+                logger.warning(f"Container '{container_name}' not found, creating it...")
                 container_client = blob_service_client.create_container(container_name)
-                logger.info(f"Container '{container_name}' created successfully")
-                return True
+                logger.info(f"Created new container: {container_name}")
+            
+            # Test container access
+            test_blob_name = "test_connection.txt"
+            test_blob = container_client.get_blob_client(test_blob_name)
+            try:
+                test_blob.upload_blob("Test connection", overwrite=True)
+                test_blob.delete_blob()
+                logger.info("Successfully tested container access")
+            except Exception as test_error:
+                logger.error(f"Failed to test container access: {str(test_error)}")
+                raise
+            
+            return True
                 
         except Exception as e:
             retry_count += 1
             logger.error(f"Error initializing Azure Blob Storage (attempt {retry_count}/{max_retries}): {str(e)}")
             if retry_count == max_retries:
-                logger.warning("Failed to initialize blob storage after maximum retries")
+                logger.error("Failed to initialize blob storage after maximum retries")
                 return False
             time.sleep(1)  # Wait before retrying
 
@@ -695,9 +729,10 @@ def upload_media():
         if not content_type.startswith(('image/', 'video/')):
             return jsonify({'success': False, 'message': 'Only image and video files are allowed'})
         
-        # Generate unique filename
+        # Generate unique filename with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         file_extension = os.path.splitext(file.filename)[1]
-        unique_filename = f"{secrets.token_urlsafe(16)}{file_extension}"
+        unique_filename = f"{timestamp}_{secrets.token_urlsafe(8)}{file_extension}"
         
         logger.info(f"Attempting to upload file {file.filename} as {unique_filename}")
         
@@ -707,8 +742,16 @@ def upload_media():
         while retry_count < max_retries:
             try:
                 blob_client = container_client.get_blob_client(unique_filename)
-                blob_client.upload_blob(file)
+                # Set content type explicitly
+                blob_client.upload_blob(file, content_settings={'content_type': content_type})
                 logger.info(f"File uploaded successfully: {unique_filename}")
+                
+                # Verify the blob exists after upload
+                try:
+                    blob_client.get_blob_properties()
+                except Exception as verify_error:
+                    logger.error(f"Failed to verify blob after upload: {str(verify_error)}")
+                    raise Exception("Failed to verify blob after upload")
                 
                 # Generate SAS token for the blob
                 sas_token = generate_sas_token(unique_filename)
