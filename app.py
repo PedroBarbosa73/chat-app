@@ -48,18 +48,38 @@ logger.debug(f"Database URL (without password): {connection_string.replace(conne
 # Format connection string for SQL Server with proper encoding and timeout settings
 try:
     if 'WEBSITE_SITE_NAME' in os.environ:  # Check if running on Azure
-        # Azure-specific connection string modifications with connection pooling
-        connection_string = connection_string.replace('ODBC+Driver+18+for+SQL+Server', 'ODBC+Driver+17+for+SQL+Server')
-        connection_string += '?connection_timeout=30&command_timeout=30&pool_size=20&pool_timeout=30'
+        # Azure-specific connection string modifications
+        connection_string = connection_string.replace('mssql+pyodbc://', '')
+        conn_parts = connection_string.split('?', 1)
+        auth_parts = conn_parts[0].split('@')
+        creds = auth_parts[0].split(':')
+        server_db = auth_parts[1].split('/')
+        
+        connection_string = (
+            f"mssql+pyodbc://{creds[0]}:{creds[1]}@{server_db[0]}/{server_db[1]}"
+            "?driver=ODBC+Driver+17+for+SQL+Server"
+            "&TrustServerCertificate=yes"
+            "&connection_timeout=30"
+            "&command_timeout=30"
+            "&pool_size=20"
+            "&pool_timeout=30"
+        )
     else:
         # Local development connection string modifications
         connection_string = connection_string.replace('ODBC+Driver+18+for+SQL+Server', 'ODBC+Driver+17+for+SQL+Server')
-        connection_string = connection_string.replace('?', '?TrustServerCertificate=yes&connection_timeout=30&command_timeout=30&pool_size=20&pool_timeout=30&')
+        if 'TrustServerCertificate' not in connection_string:
+            connection_string += '&TrustServerCertificate=yes'
+        connection_string += '&connection_timeout=30&command_timeout=30&pool_size=20&pool_timeout=30'
     
     logger.info("Database connection string configured successfully")
 except Exception as e:
     logger.error(f"Error configuring database connection string: {str(e)}")
     raise
+
+# Clean up any double '?' or '&' in the connection string
+connection_string = connection_string.replace('??', '?').replace('&&', '&')
+if '?' not in connection_string:
+    connection_string = connection_string.replace('&', '?', 1)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = connection_string
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', secrets.token_hex(16))
@@ -76,6 +96,88 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 app.config['SQLALCHEMY_POOL_PRE_PING'] = True  # Enable connection testing before use
 db = SQLAlchemy(app)
 
+# Model definitions
+class User(db.Model):
+    __tablename__ = 'users'
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(50), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'username': self.username,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+class Room(db.Model):
+    __tablename__ = 'rooms'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255))
+    is_private = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def set_password(self, password):
+        if password:
+            self.password_hash = generate_password_hash(password)
+            self.is_private = True
+        else:
+            self.password_hash = None
+            self.is_private = False
+
+    def check_password(self, password):
+        if not self.is_private:
+            return True
+        if not password:
+            return False
+        return check_password_hash(self.password_hash, password)
+
+class Message(db.Model):
+    __tablename__ = 'messages'
+    id = db.Column(db.Integer, primary_key=True)
+    message_id = db.Column(db.String(20), unique=True, nullable=False)
+    content = db.Column(db.Text)
+    username = db.Column(db.String(50), nullable=False)
+    room_id = db.Column(db.Integer, db.ForeignKey('rooms.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    has_media = db.Column(db.Boolean, default=False)
+    media_type = db.Column(db.String(10))
+    media_url = db.Column(db.String(500))
+    media_filename = db.Column(db.String(255))
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'message_id': self.message_id,
+            'content': self.content,
+            'username': self.username,
+            'room_id': self.room_id,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'has_media': self.has_media,
+            'media_type': self.media_type,
+            'media_url': self.media_url,
+            'media_filename': self.media_filename
+        }
+
+class FavoriteRoom(db.Model):
+    __tablename__ = 'favorite_rooms'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    room_id = db.Column(db.Integer, db.ForeignKey('rooms.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'room_id', name='unique_user_room'),
+    )
+
 # Global variables for blob storage
 blob_service_client = None
 container_client = None
@@ -90,7 +192,8 @@ def initialize_blob_storage():
             logger.info("Initializing Azure Blob Storage...")
             connection_string = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
             if not connection_string:
-                raise ValueError("AZURE_STORAGE_CONNECTION_STRING not found in environment variables")
+                logger.warning("AZURE_STORAGE_CONNECTION_STRING not found in environment variables")
+                return False
             
             blob_service_client = BlobServiceClient.from_connection_string(connection_string)
             container_name = "chat-media"
@@ -111,23 +214,24 @@ def initialize_blob_storage():
             retry_count += 1
             logger.error(f"Error initializing Azure Blob Storage (attempt {retry_count}/{max_retries}): {str(e)}")
             if retry_count == max_retries:
-                logger.error("Failed to initialize blob storage after maximum retries")
+                logger.warning("Failed to initialize blob storage after maximum retries")
                 return False
             time.sleep(1)  # Wait before retrying
 
-def initialize_storage():
-    with app.app_context():
-        try:
-            # Create all tables if they don't exist
-            db.create_all()
-            logger.info("Tables created/updated successfully")
-            
-            # Initialize blob storage
-            if not initialize_blob_storage():
-                logger.error("Failed to initialize blob storage")
-            
-            # Create private_messages table
-            with db.engine.connect() as connection:
+# Initialize storage once at startup
+with app.app_context():
+    try:
+        # Create all tables if they don't exist
+        db.create_all()
+        logger.info("Tables created/updated successfully")
+        
+        # Initialize blob storage
+        if not initialize_blob_storage():
+            logger.warning("Failed to initialize blob storage")
+        
+        # Create private_messages table
+        with db.engine.connect() as connection:
+            try:
                 connection.execute(text("""
                     IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'private_messages')
                     BEGIN
@@ -143,13 +247,12 @@ def initialize_storage():
                     END
                 """))
                 connection.commit()
-            logger.info("Private messages table created/verified successfully")
-        except Exception as e:
-            logger.error(f"Error during initialization: {str(e)}")
-            raise e
-
-# Register the initialization function
-app.before_request_funcs.setdefault(None, []).append(initialize_storage)
+                logger.info("Private messages table created/verified successfully")
+            except Exception as e:
+                logger.warning(f"Error creating private_messages table: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error during initialization: {str(e)}")
+        # Don't raise the error, let the application continue
 
 # Make session permanent by default
 @app.before_request
