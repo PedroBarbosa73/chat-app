@@ -1,6 +1,6 @@
 import os
 
-bind = f"0.0.0.0:{os.getenv('PORT', '8000')}"
+bind = f"0.0.0.0:{os.getenv('WEBSITES_PORT', '8000')}"
 workers = 4
 timeout = 600
 preload_app = True
