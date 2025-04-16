@@ -154,7 +154,7 @@ class Message(db.Model):
     media_filename = db.Column(db.String(255))
 
     def to_dict(self):
-        return {
+        data = {
             'id': self.id,
             'message_id': self.message_id,
             'content': self.content,
@@ -163,9 +163,22 @@ class Message(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'has_media': self.has_media,
             'media_type': self.media_type,
-            'media_url': self.media_url,
             'media_filename': self.media_filename
         }
+        
+        # Generate fresh SAS token for media URL if needed
+        if self.has_media and self.media_filename:
+            try:
+                sas_token = generate_sas_token(self.media_filename)
+                blob_client = container_client.get_blob_client(self.media_filename)
+                data['media_url'] = f"{blob_client.url}?{sas_token}"
+            except Exception as e:
+                logger.error(f"Error generating fresh SAS token for {self.media_filename}: {str(e)}")
+                data['media_url'] = self.media_url
+        else:
+            data['media_url'] = self.media_url
+            
+        return data
 
 class FavoriteRoom(db.Model):
     __tablename__ = 'favorite_rooms'
@@ -883,6 +896,22 @@ def send_private_message():
         logger.error(f"Error sending private message: {str(e)}")
         db.session.rollback()
         return jsonify({'success': False, 'message': 'Server error'})
+
+@app.route('/refresh-media-url/<path:filename>')
+def refresh_media_url(filename):
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'message': 'Please login first'})
+        
+    try:
+        sas_token = generate_sas_token(filename)
+        blob_client = container_client.get_blob_client(filename)
+        return jsonify({
+            'success': True,
+            'media_url': f"{blob_client.url}?{sas_token}"
+        })
+    except Exception as e:
+        logger.error(f"Error refreshing media URL: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error refreshing media URL'})
 
 if __name__ == '__main__':
     try:
