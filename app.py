@@ -115,160 +115,46 @@ def initialize_blob_storage():
                 return False
             time.sleep(1)  # Wait before retrying
 
-# Initialize database and storage on startup
-with app.app_context():
-    try:
-        # Create all tables if they don't exist
-        db.create_all()
-        logger.info("Tables created/updated successfully")
-        
-        # Initialize blob storage
-        if not initialize_blob_storage():
-            logger.error("Failed to initialize blob storage")
-        
-        # Create private_messages table
-        with db.engine.connect() as connection:
-            connection.execute(text("""
-                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'private_messages')
-                BEGIN
-                    CREATE TABLE private_messages (
-                        id INT IDENTITY(1,1) PRIMARY KEY,
-                        sender_username VARCHAR(50) NOT NULL,
-                        receiver_username VARCHAR(50) NOT NULL,
-                        content NVARCHAR(MAX) NOT NULL,
-                        created_at DATETIME NOT NULL DEFAULT GETDATE(),
-                        CONSTRAINT FK_PrivateMessages_SenderUser FOREIGN KEY (sender_username) REFERENCES users(username),
-                        CONSTRAINT FK_PrivateMessages_ReceiverUser FOREIGN KEY (receiver_username) REFERENCES users(username)
-                    )
-                END
-            """))
-            connection.commit()
-        logger.info("Private messages table created/verified successfully")
-    except Exception as e:
-        logger.error(f"Error during initialization: {str(e)}")
-        raise e
+def initialize_storage():
+    with app.app_context():
+        try:
+            # Create all tables if they don't exist
+            db.create_all()
+            logger.info("Tables created/updated successfully")
+            
+            # Initialize blob storage
+            if not initialize_blob_storage():
+                logger.error("Failed to initialize blob storage")
+            
+            # Create private_messages table
+            with db.engine.connect() as connection:
+                connection.execute(text("""
+                    IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'private_messages')
+                    BEGIN
+                        CREATE TABLE private_messages (
+                            id INT IDENTITY(1,1) PRIMARY KEY,
+                            sender_username VARCHAR(50) NOT NULL,
+                            receiver_username VARCHAR(50) NOT NULL,
+                            content NVARCHAR(MAX) NOT NULL,
+                            created_at DATETIME NOT NULL DEFAULT GETDATE(),
+                            CONSTRAINT FK_PrivateMessages_SenderUser FOREIGN KEY (sender_username) REFERENCES users(username),
+                            CONSTRAINT FK_PrivateMessages_ReceiverUser FOREIGN KEY (receiver_username) REFERENCES users(username)
+                        )
+                    END
+                """))
+                connection.commit()
+            logger.info("Private messages table created/verified successfully")
+        except Exception as e:
+            logger.error(f"Error during initialization: {str(e)}")
+            raise e
+
+# Register the initialization function
+app.before_request_funcs.setdefault(None, []).append(initialize_storage)
 
 # Make session permanent by default
 @app.before_request
 def make_session_permanent():
     session.permanent = True
-
-# Initialize storage on startup
-def initialize_storage():
-    with app.app_context():
-        if not initialize_blob_storage():
-            logger.error("Failed to initialize blob storage")
-
-# Register the initialization function
-app.before_request_funcs.setdefault(None, []).append(initialize_storage)
-
-class Room(db.Model):
-    __tablename__ = 'rooms'
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(50), unique=True, nullable=False)
-    is_private = db.Column(db.Boolean, default=False)
-    password_hash = db.Column(db.String(200))
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-    def set_password(self, password):
-        if password:
-            self.password_hash = generate_password_hash(password)
-            self.is_private = True
-        else:
-            self.password_hash = None
-            self.is_private = False
-
-    def check_password(self, password):
-        # If room is private and has a password hash, require password
-        if self.is_private and self.password_hash:
-            if not password:
-                return False
-            return check_password_hash(self.password_hash, password)
-        # If room is not private or has no password hash, allow access
-        return True
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'name': self.name,
-            'is_private': self.is_private,
-            'created_at': self.created_at.isoformat() if self.created_at else None
-        }
-
-class Message(db.Model):
-    __tablename__ = 'messages'
-    id = db.Column(db.Integer, primary_key=True)
-    content = db.Column(Unicode(4000), nullable=True)  # Changed to nullable=True
-    message_id = db.Column(db.String(20), unique=True, nullable=False)
-    username = db.Column(db.String(50), nullable=False, default='Anonymous')
-    room_id = db.Column(db.Integer, db.ForeignKey('rooms.id'), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.now(timezone.utc))
-    
-    # New fields for media
-    has_media = db.Column(db.Boolean, default=False)
-    media_type = db.Column(db.String(50), nullable=True)  # 'image' or 'video'
-    media_url = db.Column(db.String(500), nullable=True)
-    media_filename = db.Column(db.String(255), nullable=True)
-
-    # Relationship with Room
-    room = db.relationship('Room', backref=db.backref('messages', lazy=True))
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'content': self.content,
-            'message_id': self.message_id,
-            'username': self.username,
-            'room_name': self.room.name,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'has_media': self.has_media,
-            'media_type': self.media_type,
-            'media_url': self.media_url,
-            'media_filename': self.media_filename
-        }
-
-class User(db.Model):
-    __tablename__ = 'users'
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(50), unique=True, nullable=False)
-    password_hash = db.Column(db.String(200), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-    def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
-
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'username': self.username,
-            'created_at': self.created_at.isoformat() if self.created_at else None
-        }
-
-class FavoriteRoom(db.Model):
-    __tablename__ = 'favorite_rooms'
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    room_id = db.Column(db.Integer, db.ForeignKey('rooms.id'), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-    # Add unique constraint to prevent duplicate favorites
-    __table_args__ = (db.UniqueConstraint('user_id', 'room_id', name='unique_user_room_favorite'),)
-
-    # Relationships
-    user = db.relationship('User', backref=db.backref('favorite_rooms', lazy=True))
-    room = db.relationship('Room', backref=db.backref('favorited_by', lazy=True))
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'user_id': self.user_id,
-            'room_id': self.room_id,
-            'room_name': self.room.name,
-            'created_at': self.created_at.isoformat() if self.created_at else None
-        }
 
 def ensure_blob_storage():
     global blob_service_client, container_client
