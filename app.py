@@ -622,20 +622,5 @@ def serve_static(filename):
     return send_from_directory('static', filename)
 
 if __name__ == '__main__':
-    try:
-        print("\n=== Starting Server ===")
-        print("Access URLs:")
-        print("Local: http://127.0.0.1:5000")
-        print("Network: http://192.168.1.78:5000")
-        print("======================\n")
-        
-        # Initialize database
-        initialize_database()
-        
-        # Initialize blob storage
-        initialize_blob_storage()
-            
-        socketio.run(app, host='0.0.0.0', port=5000, debug=True)
-    except Exception as e:
-        print(f"Error starting server: {e}")
-        raise 
+    port = int(os.environ.get('PORT', 8181))
+    socketio.run(app, host='0.0.0.0', port=port) 
