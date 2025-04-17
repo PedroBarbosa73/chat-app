@@ -83,7 +83,7 @@ try:
     logger.debug(f"Database connection info (masked): {masked_info}")
     
     # Format the SQLAlchemy URL
-    connection_string = f"mssql+pyodbc://{username}:{password}@{server}/{database}?driver=ODBC+Driver+17+for+SQL+Server&TrustServerCertificate=yes&connection_timeout=30&command_timeout=30&pool_size=20&pool_timeout=30"
+    connection_string = f"mssql+pyodbc://{username}:{password}@{server}/{database}?driver=ODBC+Driver+17+for+SQL+Server&TrustServerCertificate=yes&connection_timeout=60&command_timeout=60&pool_size=5&pool_timeout=60&pool_pre_ping=true"
     
     logger.info("Database connection string configured successfully")
 except Exception as e:
@@ -98,10 +98,14 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=31)  # Session lasts f
 app.config['SESSION_REFRESH_EACH_REQUEST'] = True  # Refresh session on each request
 app.config['SESSION_TYPE'] = 'filesystem'  # Use filesystem to store session data
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    'pool_size': 20,
-    'pool_timeout': 30,
+    'pool_size': 5,
+    'pool_timeout': 60,
     'pool_recycle': 1800,
-    'max_overflow': 10
+    'max_overflow': 2,
+    'connect_args': {
+        'timeout': 60,
+        'connect_timeout': 60
+    }
 }
 app.config['SQLALCHEMY_POOL_PRE_PING'] = True  # Enable connection testing before use
 
