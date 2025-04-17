@@ -7,7 +7,7 @@ Flask-SocketIO==5.1.1
 python-socketio==5.4.0
 python-engineio==4.2.1
 eventlet==0.30.2
-dnspython==2.2.1
+dnspython==1.16.0
 gunicorn==21.2.0
 azure-storage-blob==12.8.1
 azure-core==1.29.5
