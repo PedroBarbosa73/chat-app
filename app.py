@@ -1,5 +1,6 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session, send_file
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session, send_file, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
+from flask_socketio import SocketIO, emit, join_room, leave_room, rooms, disconnect
 import secrets
 import os
 from dotenv import load_dotenv
@@ -11,11 +12,28 @@ import time
 from azure.storage.blob import BlobServiceClient, BlobSasPermissions, generate_blob_sas
 import mimetypes
 import pyodbc
+from functools import wraps
+from sqlalchemy.exc import SQLAlchemyError
+import sys
+from werkzeug.utils import secure_filename
+import uuid
+from models import db, Message, User
 
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(level=logging.DEBUG)
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+# Configure logging with more detail
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Log Azure environment information
@@ -26,6 +44,7 @@ if 'WEBSITE_SITE_NAME' in os.environ:
     logger.info(f"Python Version: {os.getenv('PYTHON_VERSION')}")
 
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*", logger=True, engineio_logger=True)
 
 # Custom Jinja filter for datetime formatting
 @app.template_filter('datetime')
@@ -43,43 +62,33 @@ if not connection_string:
     raise ValueError("Database connection string not found in environment variables")
 
 container_name = "chat-media"  # Name of the container for storing media files
-logger.debug(f"Database URL (without password): {connection_string.replace(connection_string.split(':')[2].split('@')[0], '***')}")
 
-# Format connection string for SQL Server with proper encoding and timeout settings
+# Format connection string for SQLAlchemy
 try:
-    if 'WEBSITE_SITE_NAME' in os.environ:  # Check if running on Azure
-        # Azure-specific connection string modifications
-        connection_string = connection_string.replace('mssql+pyodbc://', '')
-        conn_parts = connection_string.split('?', 1)
-        auth_parts = conn_parts[0].split('@')
-        creds = auth_parts[0].split(':')
-        server_db = auth_parts[1].split('/')
-        
-        connection_string = (
-            f"mssql+pyodbc://{creds[0]}:{creds[1]}@{server_db[0]}/{server_db[1]}"
-            "?driver=ODBC+Driver+17+for+SQL+Server"
-            "&TrustServerCertificate=yes"
-            "&connection_timeout=30"
-            "&command_timeout=30"
-            "&pool_size=20"
-            "&pool_timeout=30"
-        )
-    else:
-        # Local development connection string modifications
-        connection_string = connection_string.replace('ODBC+Driver+18+for+SQL+Server', 'ODBC+Driver+17+for+SQL+Server')
-        if 'TrustServerCertificate' not in connection_string:
-            connection_string += '&TrustServerCertificate=yes'
-        connection_string += '&connection_timeout=30&command_timeout=30&pool_size=20&pool_timeout=30'
+    # Parse the ODBC connection string components
+    params = {}
+    for param in connection_string.split(';'):
+        if '=' in param:
+            key, value = param.split('=', 1)
+            params[key.strip()] = value.strip()
+    
+    # Construct SQLAlchemy URL
+    server = params.get('Server', '').replace('tcp:', '')
+    database = params.get('Database', '')
+    username = params.get('Uid', '')
+    password = params.get('Pwd', '')
+    
+    # Log masked connection info
+    masked_info = f"Server={server}, Database={database}, Username={username}, Password=***"
+    logger.debug(f"Database connection info (masked): {masked_info}")
+    
+    # Format the SQLAlchemy URL
+    connection_string = f"mssql+pyodbc://{username}:{password}@{server}/{database}?driver=ODBC+Driver+17+for+SQL+Server&TrustServerCertificate=yes&connection_timeout=30&command_timeout=30&pool_size=20&pool_timeout=30"
     
     logger.info("Database connection string configured successfully")
 except Exception as e:
     logger.error(f"Error configuring database connection string: {str(e)}")
     raise
-
-# Clean up any double '?' or '&' in the connection string
-connection_string = connection_string.replace('??', '?').replace('&&', '&')
-if '?' not in connection_string:
-    connection_string = connection_string.replace('&', '?', 1)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = connection_string
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', secrets.token_hex(16))
@@ -87,6 +96,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JSON_AS_ASCII'] = False
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=31)  # Session lasts for 31 days
 app.config['SESSION_REFRESH_EACH_REQUEST'] = True  # Refresh session on each request
+app.config['SESSION_TYPE'] = 'filesystem'  # Use filesystem to store session data
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_size': 20,
     'pool_timeout': 30,
@@ -94,466 +104,129 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'max_overflow': 10
 }
 app.config['SQLALCHEMY_POOL_PRE_PING'] = True  # Enable connection testing before use
+
+# File upload configuration
+UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'mp4', 'webm', 'mov'}
+MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB max file size
+
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
+
+# Ensure upload folder exists
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def upload_to_blob_storage(file_data, content_type):
+    if not BLOB_STORAGE_ENABLED:
+        return None
+        
+    try:
+        # Generate unique filename
+        file_extension = content_type.split('/')[-1]
+        blob_name = f"{uuid.uuid4()}.{file_extension}"
+        
+        # Upload to blob storage
+        blob_client = container_client.get_blob_client(blob_name)
+        blob_client.upload_blob(file_data, blob_type="BlockBlob", content_settings={"content_type": content_type})
+        
+        # Return the URL
+        return blob_client.url
+    except Exception as e:
+        print(f"Error uploading to blob storage: {str(e)}")
+        return None
+
+# Initialize extensions
 db = SQLAlchemy(app)
 
-# Model definitions
-class User(db.Model):
-    __tablename__ = 'users'
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(50), unique=True, nullable=False)
-    password_hash = db.Column(db.String(255), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-    def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
-
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'username': self.username,
-            'created_at': self.created_at.isoformat() if self.created_at else None
-        }
-
-class Room(db.Model):
-    __tablename__ = 'rooms'
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(50), unique=True, nullable=False)
-    password_hash = db.Column(db.String(255))
-    is_private = db.Column(db.Boolean, default=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-    def set_password(self, password):
-        if password:
-            self.password_hash = generate_password_hash(password)
-            self.is_private = True
-        else:
-            self.password_hash = None
-            self.is_private = False
-
-    def check_password(self, password):
-        if not self.is_private:
-            return True
-        if not password:
-            return False
-        return check_password_hash(self.password_hash, password)
-
-class Message(db.Model):
-    __tablename__ = 'messages'
-    id = db.Column(db.Integer, primary_key=True)
-    message_id = db.Column(db.String(20), unique=True, nullable=False)
-    content = db.Column(db.Text)
-    username = db.Column(db.String(50), nullable=False)
-    room_id = db.Column(db.Integer, db.ForeignKey('rooms.id'), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    has_media = db.Column(db.Boolean, default=False)
-    media_type = db.Column(db.String(10))
-    media_url = db.Column(db.String(500))
-    media_filename = db.Column(db.String(255))
-
-    def to_dict(self):
-        data = {
-            'id': self.id,
-            'message_id': self.message_id,
-            'content': self.content,
-            'username': self.username,
-            'room_id': self.room_id,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'has_media': self.has_media,
-            'media_type': self.media_type,
-            'media_filename': self.media_filename
-        }
-        
-        # Generate fresh SAS token for media URL if needed
-        if self.has_media and self.media_filename:
-            try:
-                # Check if blob exists first
-                blob_client = container_client.get_blob_client(self.media_filename)
-                try:
-                    blob_client.get_blob_properties()
-                    # Blob exists, generate SAS token
-                    sas_token = generate_sas_token(self.media_filename)
-                    data['media_url'] = f"{blob_client.url}?{sas_token}"
-                    logger.info(f"Successfully generated SAS token for blob: {self.media_filename}")
-                except Exception as blob_error:
-                    logger.error(f"Blob not found or inaccessible: {self.media_filename}, Error: {str(blob_error)}")
-                    data['media_url'] = None
-                    data['has_media'] = False  # Mark as no media since blob is missing
-            except Exception as e:
-                logger.error(f"Error checking blob and generating SAS token for {self.media_filename}: {str(e)}")
-                data['media_url'] = None
-                data['has_media'] = False
-        else:
-            data['media_url'] = None
-            
-        return data
-
-class FavoriteRoom(db.Model):
-    __tablename__ = 'favorite_rooms'
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    room_id = db.Column(db.Integer, db.ForeignKey('rooms.id'), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-    __table_args__ = (
-        db.UniqueConstraint('user_id', 'room_id', name='unique_user_room'),
-    )
-
-# Global variables for blob storage
-blob_service_client = None
-container_client = None
-
-def initialize_blob_storage():
-    global blob_service_client, container_client
-    max_retries = 3
-    retry_count = 0
-    
-    while retry_count < max_retries:
-        try:
-            logger.info("Initializing Azure Blob Storage...")
-            connection_string = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
-            if not connection_string:
-                logger.error("AZURE_STORAGE_CONNECTION_STRING not found in environment variables")
-                return False
-            
-            # Log connection string (without sensitive info)
-            safe_connection_string = connection_string.replace(
-                connection_string.split('AccountKey=')[1].split(';')[0],
-                '***'
-            )
-            logger.info(f"Using storage connection string: {safe_connection_string}")
-            
-            blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-            
-            # Verify the service client
-            blob_service_client.get_service_properties()
-            logger.info("Successfully connected to Azure Blob Storage")
-            
-            # Get or create container
-            container_name = "chat-media"
-            container_client = blob_service_client.get_container_client(container_name)
-            
-            try:
-                container_properties = container_client.get_container_properties()
-                logger.info(f"Found existing container: {container_name}")
-                logger.info(f"Container last modified: {container_properties.last_modified}")
-            except Exception as container_error:
-                logger.warning(f"Container '{container_name}' not found, creating it...")
-                container_client = blob_service_client.create_container(container_name)
-                logger.info(f"Created new container: {container_name}")
-            
-            # Test container access
-            test_blob_name = "test_connection.txt"
-            test_blob = container_client.get_blob_client(test_blob_name)
-            try:
-                test_blob.upload_blob("Test connection", overwrite=True)
-                test_blob.delete_blob()
-                logger.info("Successfully tested container access")
-            except Exception as test_error:
-                logger.error(f"Failed to test container access: {str(test_error)}")
-                raise
-            
-            return True
-                
-        except Exception as e:
-            retry_count += 1
-            logger.error(f"Error initializing Azure Blob Storage (attempt {retry_count}/{max_retries}): {str(e)}")
-            if retry_count == max_retries:
-                logger.error("Failed to initialize blob storage after maximum retries")
-                return False
-            time.sleep(1)  # Wait before retrying
-
-# Initialize storage once at startup
-with app.app_context():
-    try:
-        # Create all tables if they don't exist
-        db.create_all()
-        logger.info("Tables created/updated successfully")
-        
-        # Initialize blob storage
-        if not initialize_blob_storage():
-            logger.warning("Failed to initialize blob storage")
-        
-        # Create private_messages table
-        with db.engine.connect() as connection:
-            try:
-                connection.execute(text("""
-                    IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'private_messages')
-                    BEGIN
-                        CREATE TABLE private_messages (
-                            id INT IDENTITY(1,1) PRIMARY KEY,
-                            sender_username VARCHAR(50) NOT NULL,
-                            receiver_username VARCHAR(50) NOT NULL,
-                            content NVARCHAR(MAX) NOT NULL,
-                            created_at DATETIME NOT NULL DEFAULT GETDATE(),
-                            CONSTRAINT FK_PrivateMessages_SenderUser FOREIGN KEY (sender_username) REFERENCES users(username),
-                            CONSTRAINT FK_PrivateMessages_ReceiverUser FOREIGN KEY (receiver_username) REFERENCES users(username)
-                        )
-                    END
-                """))
-                connection.commit()
-                logger.info("Private messages table created/verified successfully")
-            except Exception as e:
-                logger.warning(f"Error creating private_messages table: {str(e)}")
-    except Exception as e:
-        logger.error(f"Error during initialization: {str(e)}")
-        # Don't raise the error, let the application continue
-
-# Make session permanent by default
 @app.before_request
-def make_session_permanent():
-    session.permanent = True
-
-def ensure_blob_storage():
-    global blob_service_client, container_client
-    if blob_service_client is None or container_client is None:
-        return initialize_blob_storage()
-    return True
-
-def generate_sas_token(blob_name):
-    """Generate a SAS token for a blob"""
-    try:
-        # Get account info from the container client
-        account_name = container_client.account_name
-        # Get the account key from the connection string
-        connection_string = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
-        # Parse connection string to get account key
-        connection_parts = dict(part.split('=', 1) for part in connection_string.split(';'))
-        account_key = connection_parts.get('AccountKey')
-        
-        if not account_key:
-            raise ValueError("AccountKey not found in connection string")
-        
-        # Generate SAS token
-        sas_token = generate_blob_sas(
-            account_name=account_name,
-            container_name=container_name,
-            blob_name=blob_name,
-            account_key=account_key,
-            permission=BlobSasPermissions(read=True),
-            expiry=datetime.now(timezone.utc) + timedelta(hours=24)
-        )
-        return sas_token
-    except Exception as e:
-        logger.error(f"Error generating SAS token: {str(e)}")
-        raise
+def before_request():
+    # Log the request details
+    logger.debug(f"Request: {request.method} {request.url}")
+    logger.debug(f"Session: {session}")
+    
+    # Check if user is not logged in and trying to access protected routes
+    if request.endpoint and request.endpoint not in ['login', 'register', 'static']:
+        if 'user_id' not in session:
+            logger.debug("Unauthorized access attempt, redirecting to login")
+            session.clear()  # Clear any existing session data
+            return redirect(url_for('login'))
+        else:
+            # Validate that the user still exists in the database
+            try:
+                user = User.query.get(session['user_id'])
+                if not user:
+                    logger.debug("User not found in database, clearing session")
+                    session.clear()
+                    return redirect(url_for('login'))
+            except Exception as e:
+                logger.error(f"Error validating user session: {str(e)}")
+                session.clear()
+                return redirect(url_for('login'))
 
 @app.route('/')
-def home():
+def index():
+    # If user is not logged in, redirect to login page
     if 'user_id' not in session:
         return redirect(url_for('login'))
     
     try:
-        # Retry connection if needed
-        max_retries = 3
-        retry_count = 0
-        while retry_count < max_retries:
-            try:
-                rooms = Room.query.order_by(Room.name).all()
-                authorized_rooms = session.get('authorized_rooms', [])
-                
-                # Get favorite rooms for the current user
-                favorite_rooms = FavoriteRoom.query.filter_by(user_id=session['user_id']).all()
-                favorite_room_ids = [fav.room_id for fav in favorite_rooms]
-                
-                return render_template('index.html', 
-                                    rooms=rooms, 
-                                    authorized_rooms=authorized_rooms,
-                                    favorite_room_ids=favorite_room_ids)
-            except Exception as e:
-                retry_count += 1
-                if retry_count == max_retries:
-                    logger.error(f"Error connecting to database after {max_retries} retries: {str(e)}")
-                    flash('Error connecting to database. Please try again later.')
-                    return redirect(url_for('login'))
-                logger.warning(f"Retrying database connection (attempt {retry_count}/{max_retries})")
-                time.sleep(1)  # Wait 1 second before retrying
+        users = User.query.all()
+        return render_template('index.html', users=users)
     except Exception as e:
-        logger.error(f"Error in home route: {str(e)}")
-        flash('Error loading page. Please try again later.')
+        logger.error(f"Error in index route: {str(e)}")
+        logger.exception("Full traceback:")
+        flash('An error occurred while loading the page.')
         return redirect(url_for('login'))
-
-@app.route('/create-room', methods=['POST'])
-def create_room():
-    try:
-        room_name = request.form.get('room_name')
-        password = request.form.get('room_password')
-        
-        if not room_name:
-            flash('Room name is required')
-            return redirect(url_for('home'))
-        
-        # Check if room already exists
-        existing_room = Room.query.filter_by(name=room_name).first()
-        if existing_room:
-            flash('Room already exists')
-            return redirect(url_for('home'))
-        
-        new_room = Room(name=room_name)
-        new_room.set_password(password)
-        
-        db.session.add(new_room)
-        db.session.commit()
-        
-        # If room is private, add it to authorized rooms for the creator
-        if new_room.is_private:
-            authorized_rooms = session.get('authorized_rooms', [])
-            authorized_rooms.append(new_room.id)
-            session['authorized_rooms'] = authorized_rooms
-        
-        logger.info(f"Room created successfully: {room_name} (Private: {new_room.is_private})")
-        return redirect(url_for('home'))
-    except Exception as e:
-        logger.error(f"Error creating room: {str(e)}")
-        db.session.rollback()
-        flash('Error creating room')
-        return redirect(url_for('home'))
-
-@app.route('/join-room', methods=['POST'])
-def join_room():
-    try:
-        room_id = request.form.get('room_id', type=int)
-        password = request.form.get('room_password', '')
-        
-        if not room_id:
-            return jsonify({'success': False, 'message': 'Room ID is required'})
-        
-        room = Room.query.get(room_id)
-        if not room:
-            return jsonify({'success': False, 'message': 'Room not found'})
-        
-        if room.check_password(password):
-            authorized_rooms = session.get('authorized_rooms', [])
-            if room_id not in authorized_rooms:
-                authorized_rooms.append(room_id)
-                session['authorized_rooms'] = authorized_rooms
-                session.modified = True
-                # Force session to be saved
-                session.permanent = True
-            return jsonify({
-                'success': True,
-                'room_id': room_id,
-                'is_private': room.is_private,
-                'room_name': room.name
-            })
-        else:
-            return jsonify({'success': False, 'message': 'Incorrect password'})
-    except Exception as e:
-        logger.error(f"Error joining room: {str(e)}")
-        return jsonify({'success': False, 'message': 'Error joining room'})
-
-@app.route('/messages')
-def get_messages():
-    try:
-        # Check if user is logged in
-        if 'user_id' not in session:
-            logger.debug("User not logged in")
-            return jsonify({'error': 'Please log in to view messages'})
-            
-        room_id = request.args.get('room_id', type=int)
-        page = request.args.get('page', 1, type=int)
-        per_page = 50  # Number of messages per page
-        
-        logger.debug(f"Fetching messages for room_id: {room_id}, page: {page}")
-        
-        if not room_id:
-            logger.debug("No room_id provided")
-            return jsonify({'error': 'Room ID is required'})
-        
-        # Check if user is authorized for private rooms
-        room = Room.query.get(room_id)
-        if not room:
-            logger.debug(f"Room not found: {room_id}")
-            return jsonify({'error': 'Room not found'})
-        
-        authorized_rooms = session.get('authorized_rooms', [])
-        if room.is_private and room_id not in authorized_rooms:
-            logger.debug(f"User not authorized for private room: {room_id}")
-            return jsonify({'error': 'Unauthorized access to private room'})
-        
-        # Get messages with pagination, ordered by created_at ascending
-        messages = Message.query.filter_by(room_id=room_id)\
-            .order_by(Message.created_at.asc())\
-            .paginate(page=page, per_page=per_page, error_out=False)
-        
-        logger.debug(f"Found {messages.total} total messages, showing {len(messages.items)} on page {page}")
-        
-        return jsonify({
-            'messages': [msg.to_dict() for msg in messages.items],
-            'has_next': messages.has_next,
-            'next_page': messages.next_num if messages.has_next else None,
-            'total': messages.total
-        })
-    
-    except Exception as e:
-        logger.error(f"Error getting messages: {str(e)}")
-        return jsonify({'error': 'Error getting messages'})
-
-@app.route('/create', methods=['POST'])
-def create_message():
-    try:
-        if 'user_id' not in session:
-            return jsonify({'success': False, 'message': 'Please login first'})
-        
-        data = request.get_json()
-        content = data.get('message', '').strip()
-        username = data.get('username', 'Anonymous')
-        room_id = data.get('room_id')
-        media_data = data.get('media_data')
-        
-        if not room_id:
-            return jsonify({'success': False, 'message': 'Room selection is required'})
-        
-        if not content and not media_data:
-            return jsonify({'success': False, 'message': 'Message or media is required'})
-            
-        # Verify room exists and user is authorized
-        room = Room.query.get(room_id)
-        if not room:
-            return jsonify({'success': False, 'message': 'Selected room does not exist'})
-            
-        authorized_rooms = session.get('authorized_rooms', [])
-        if room.is_private and room_id not in authorized_rooms:
-            return jsonify({'success': False, 'message': 'You are not authorized to post in this room'})
-        
-        message_id = secrets.token_urlsafe(8)
-        new_message = Message(
-            content=content if content else None,  # Allow NULL content
-            message_id=message_id,
-            username=username,
-            room_id=room_id
-        )
-        
-        # Add media information if present
-        if media_data and media_data.get('success'):
-            new_message.has_media = True
-            new_message.media_type = media_data.get('media_type')
-            new_message.media_url = media_data.get('media_url')
-            new_message.media_filename = media_data.get('filename')
-        
-        db.session.add(new_message)
-        db.session.commit()
-        logger.info(f"Message created successfully with ID: {message_id} by user: {username} in room: {room.name}")
-        
-        return jsonify({'success': True})
-    except Exception as e:
-        logger.error(f"Error creating message: {str(e)}")
-        db.session.rollback()
-        return jsonify({'success': False, 'message': 'Error creating message'})
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    logger.debug("=== Starting login route ===")
     if request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
         
+        logger.debug(f"Login attempt for username: {username}")
+        
+        if not username or not password:
+            flash('Please provide both username and password')
+            return redirect(url_for('login'))
+        
         user = User.query.filter_by(username=username).first()
-        if user and user.check_password(password):
-            session['user_id'] = user.id
-            session['username'] = user.username
-            return redirect(url_for('home'))
+        logger.debug(f"Found user: {user is not None}")
+        
+        if user:
+            try:
+                # Try to verify the password
+                if user.check_password(password):
+                    session['user_id'] = user.id
+                    session['username'] = user.username
+                    session.permanent = True
+                    logger.info(f"Successful login for user: {username}")
+                    return redirect(url_for('index'))
+                else:
+                    # If verification fails, try to migrate the password
+                    try:
+                        # Set the password again using SHA-256
+                        user.set_password(password)
+                        db.session.commit()
+                        logger.info(f"Migrated password hash for user: {username}")
+                        
+                        # Log the user in
+                        session['user_id'] = user.id
+                        session['username'] = user.username
+                        session.permanent = True
+                        return redirect(url_for('index'))
+                    except Exception as e:
+                        logger.error(f"Error migrating password: {str(e)}")
+                        flash('Error updating password. Please contact support.')
+                        return redirect(url_for('login'))
+            except Exception as e:
+                logger.error(f"Error checking password: {str(e)}")
+                flash('Invalid username or password')
+                return redirect(url_for('login'))
         
         flash('Invalid username or password')
         return redirect(url_for('login'))
@@ -567,7 +240,7 @@ def register():
         password = request.form.get('password')
         
         if not username or not password:
-            flash('Username and password are required')
+            flash('Please provide both username and password')
             return redirect(url_for('register'))
         
         if User.query.filter_by(username=username).first():
@@ -582,11 +255,12 @@ def register():
             db.session.commit()
             session['user_id'] = user.id
             session['username'] = user.username
-            return redirect(url_for('home'))
+            session.permanent = True
+            return redirect(url_for('index'))
         except Exception as e:
-            logger.error(f"Error registering user: {str(e)}")
             db.session.rollback()
-            flash('Error registering user')
+            logger.error(f"Error registering user: {str(e)}")
+            flash('Error creating account. Please try again.')
             return redirect(url_for('register'))
     
     return render_template('register.html')
@@ -596,365 +270,356 @@ def logout():
     session.clear()
     return redirect(url_for('login'))
 
-@app.route('/favorite-room', methods=['POST'])
-def favorite_room():
-    if 'user_id' not in session:
-        return jsonify({'success': False, 'message': 'Please login first'})
-    
+@app.route('/send_message', methods=['POST'])
+@login_required
+def send_message():
     try:
-        room_id = request.form.get('room_id', type=int)
-        if not room_id:
-            return jsonify({'success': False, 'message': 'Room ID is required'})
+        if 'username' not in session:
+            return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+        sender = session['username']
+        receiver = request.form.get('receiver')
+        content = request.form.get('content', '')
+        media = request.files.get('media')
         
-        # Check if room exists
+        if not receiver:
+            return jsonify({'success': False, 'error': 'Receiver is required'}), 400
+
+        has_media = False
+        media_type = None
+        media_url = None
+        media_filename = None
+
+        # Handle file upload if present
+        if media and allowed_file(media.filename):
+            try:
+                # Generate unique filename
+                filename = secure_filename(media.filename)
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                unique_filename = f"{timestamp}_{filename}"
+                
+                # Save file locally
+                file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+                media.save(file_path)
+                
+                has_media = True
+                media_type = media.content_type
+                media_url = f'/uploads/{unique_filename}'
+                media_filename = unique_filename
+                
+                logger.info(f"File uploaded successfully: {unique_filename}")
+            except Exception as e:
+                logger.error(f"Error saving file: {str(e)}")
+                return jsonify({'success': False, 'error': 'Failed to save file'}), 500
+
+        # Create and save the message
+        try:
+            message = Message(
+                sender_username=sender,
+                receiver_username=receiver,
+                content=content,
+                has_media=has_media,
+                media_type=media_type,
+                media_url=media_url,
+                media_filename=media_filename
+            )
+            db.session.add(message)
+            db.session.commit()
+            
+            # Prepare message data for socket emission
+            message_data = message.to_dict()
+            socketio.emit('new_message', message_data, room=sender)
+            socketio.emit('new_message', message_data, room=receiver)
+            
+            return jsonify({
+                'success': True,
+                'message': message_data
+            })
+            
+        except Exception as e:
+            logger.error(f"Error saving message to database: {str(e)}")
+            if has_media and media_filename:
+                # Clean up uploaded file if message save fails
+                try:
+                    os.remove(os.path.join(app.config['UPLOAD_FOLDER'], media_filename))
+                except:
+                    pass
+            return jsonify({'success': False, 'error': 'Failed to save message'}), 500
+            
+    except Exception as e:
+        logger.error(f"Error in send_message: {str(e)}")
+        return jsonify({'success': False, 'error': 'Internal server error'}), 500
+
+@app.route('/messages/<username>')
+@login_required
+def get_messages(username):
+    try:
+        current_user = session['username']
+        messages = Message.query.filter(
+            ((Message.sender_username == current_user) & (Message.receiver_username == username)) |
+            ((Message.sender_username == username) & (Message.receiver_username == current_user))
+        ).order_by(Message.created_at.asc()).all()
+        
+        return jsonify({'success': True, 'messages': [msg.to_dict() for msg in messages]})
+    except Exception as e:
+        logger.error(f"Error in get_messages: {str(e)}")
+        return jsonify({'success': False, 'error': 'Failed to retrieve messages'}), 500
+
+@app.route('/users')
+@login_required
+def get_users():
+    try:
+        users = User.query.all()
+        user_list = []
+        for user in users:
+            user_list.append({
+                'id': user.id,
+                'username': user.username,
+                'created_at': user.created_at.isoformat() if user.created_at else None
+            })
+        return jsonify({
+            'success': True,
+            'users': user_list
+        })
+    except Exception as e:
+        logger.error(f"Error getting users list: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': 'Error retrieving users list'
+        }), 500
+
+@app.route('/favorite-room', methods=['POST'])
+@login_required
+def toggle_favorite_room():
+    try:
+        logger.debug(f"Starting favorite room toggle for user {session.get('user_id')}")
+        room_id = request.form.get('room_id')
+        
+        if not room_id:
+            logger.warning("Toggle favorite failed: No room_id provided")
+            return jsonify({'success': False, 'message': 'Room ID required'}), 400
+
+        room_id = int(room_id)
+        logger.debug(f"Checking if room {room_id} exists")
         room = Room.query.get(room_id)
         if not room:
-            return jsonify({'success': False, 'message': 'Room not found'})
-        
-        # Check if already favorited
-        existing_favorite = FavoriteRoom.query.filter_by(
+            logger.warning(f"Toggle favorite failed: Room {room_id} not found")
+            return jsonify({'success': False, 'message': 'Room not found'}), 404
+
+        logger.debug(f"Checking existing favorite for user {session['user_id']} and room {room_id}")
+        favorite = FavoriteRoom.query.filter_by(
             user_id=session['user_id'],
             room_id=room_id
         ).first()
-        
-        if existing_favorite:
-            # If already favorited, unfavorite it
-            db.session.delete(existing_favorite)
-            db.session.commit()
-            return jsonify({
-                'success': True,
-                'message': 'Room removed from favorites',
-                'is_favorite': False
-            })
-        
-        # Add to favorites
-        new_favorite = FavoriteRoom(
-            user_id=session['user_id'],
-            room_id=room_id
-        )
-        db.session.add(new_favorite)
+
+        if favorite:
+            logger.debug(f"Removing favorite for room {room_id}")
+            db.session.delete(favorite)
+            is_favorite = False
+        else:
+            logger.debug(f"Adding favorite for room {room_id}")
+            favorite = FavoriteRoom(user_id=session['user_id'], room_id=room_id)
+            db.session.add(favorite)
+            is_favorite = True
+
+        logger.debug("Committing changes to database")
         db.session.commit()
+        logger.info(f"Successfully {'added' if is_favorite else 'removed'} room {room_id} {'to' if is_favorite else 'from'} favorites for user {session['user_id']}")
         
         return jsonify({
             'success': True,
-            'message': 'Room added to favorites',
-            'is_favorite': True
+            'is_favorite': is_favorite,
+            'message': f'Room {"added to" if is_favorite else "removed from"} favorites successfully'
         })
-    
-    except Exception as e:
-        logger.error(f"Error managing favorite room: {str(e)}")
+
+    except ValueError as e:
+        logger.error(f"Value error in toggle_favorite_room: {str(e)}")
         db.session.rollback()
-        return jsonify({'success': False, 'message': 'Error managing favorite room'})
-
-@app.route('/favorite-rooms', methods=['GET'])
-def get_favorite_rooms():
-    try:
-        logger.debug("=== Starting get_favorite_rooms ===")
-        logger.debug(f"Session contents: {dict(session)}")
-        
-        if 'user_id' not in session:
-            logger.warning("No user_id found in session")
-            return jsonify({'success': False, 'message': 'Please login first'})
-        
-        user_id = session['user_id']
-        logger.debug(f'Getting favorites for user_id: {user_id}')
-        
-        # First check if user exists
-        user = User.query.get(user_id)
-        if not user:
-            logger.error(f"User not found for user_id: {user_id}")
-            return jsonify({'success': False, 'message': 'User not found'})
-        
-        logger.debug(f'Found user: {user.username}')
-        
-        # Get favorite rooms with complete room information
-        logger.debug("Querying favorite rooms from database")
-        favorites = db.session.query(FavoriteRoom, Room)\
-            .join(Room, FavoriteRoom.room_id == Room.id)\
-            .filter(FavoriteRoom.user_id == user_id)\
-            .all()
-        
-        logger.debug(f'Found {len(favorites)} favorites')
-        
-        # Log each favorite room for debugging
-        for fav, room in favorites:
-            logger.debug(f'Favorite room: {room.name} (ID: {room.id})')
-            logger.debug(f'Favorite entry: user_id={fav.user_id}, room_id={fav.room_id}')
-        
-        # Format the response with complete room information
-        favorite_rooms = [{
-            'id': fav.id,
-            'user_id': fav.user_id,
-            'room_id': fav.room_id,
-            'room_name': room.name,
-            'room': {
-                'id': room.id,
-                'name': room.name,
-                'is_private': room.is_private,
-                'created_at': room.created_at.isoformat() if room.created_at else None
-            }
-        } for fav, room in favorites]
-        
-        response = {
-            'success': True,
-            'favorites': favorite_rooms
-        }
-        logger.debug(f'Sending response: {response}')
-        logger.debug("=== End get_favorite_rooms ===")
-        return jsonify(response)
-    except Exception as e:
-        logger.error(f"Error getting favorite rooms: {str(e)}")
-        logger.exception("Full traceback:")  # This will log the full stack trace
-        return jsonify({'success': False, 'message': f'Error getting favorite rooms: {str(e)}'})
-
-@app.route('/upload-media', methods=['POST'])
-def upload_media():
-    if 'user_id' not in session:
-        return jsonify({'success': False, 'message': 'Please login first'})
-    
-    try:
-        # Ensure blob storage is initialized
-        if not ensure_blob_storage():
-            return jsonify({'success': False, 'message': 'Storage service unavailable'})
-            
-        if 'file' not in request.files:
-            return jsonify({'success': False, 'message': 'No file provided'})
-        
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'success': False, 'message': 'No file selected'})
-        
-        # Check file type
-        content_type = file.content_type
-        if not content_type.startswith(('image/', 'video/')):
-            return jsonify({'success': False, 'message': 'Only image and video files are allowed'})
-        
-        # Generate unique filename with timestamp
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        file_extension = os.path.splitext(file.filename)[1]
-        unique_filename = f"{timestamp}_{secrets.token_urlsafe(8)}{file_extension}"
-        
-        logger.info(f"Attempting to upload file {file.filename} as {unique_filename}")
-        
-        # Upload to Azure Blob Storage with retry
-        max_retries = 3
-        retry_count = 0
-        while retry_count < max_retries:
-            try:
-                blob_client = container_client.get_blob_client(unique_filename)
-                # Set content type explicitly
-                blob_client.upload_blob(file, content_settings={'content_type': content_type})
-                logger.info(f"File uploaded successfully: {unique_filename}")
-                
-                # Verify the blob exists after upload
-                try:
-                    blob_client.get_blob_properties()
-                except Exception as verify_error:
-                    logger.error(f"Failed to verify blob after upload: {str(verify_error)}")
-                    raise Exception("Failed to verify blob after upload")
-                
-                # Generate SAS token for the blob
-                sas_token = generate_sas_token(unique_filename)
-                
-                # Get the URL of the uploaded file with SAS token
-                media_url = f"{blob_client.url}?{sas_token}"
-                
-                return jsonify({
-                    'success': True,
-                    'media_url': media_url,
-                    'media_type': 'image' if content_type.startswith('image/') else 'video',
-                    'filename': file.filename,
-                    'unique_filename': unique_filename
-                })
-            except Exception as e:
-                retry_count += 1
-                logger.error(f"Error uploading file (attempt {retry_count}/{max_retries}): {str(e)}")
-                if retry_count == max_retries:
-                    return jsonify({'success': False, 'message': 'Error uploading file after multiple attempts'})
-                time.sleep(1)
-                
-    except Exception as e:
-        logger.error(f"Error in upload_media route: {str(e)}")
-        return jsonify({'success': False, 'message': 'Error processing upload request'})
-
-@app.route('/delete-room/<int:room_id>', methods=['DELETE'])
-def delete_room(room_id):
-    if not session.get('username') or session['username'].lower() != 'nando':
-        return jsonify({'success': False, 'message': 'Unauthorized'}), 403
-
-    try:
-        # Delete messages first (due to foreign key constraint)
-        db.session.query(Message).filter_by(room_id=room_id).delete()
-        
-        # Delete room favorites
-        db.session.query(FavoriteRoom).filter_by(room_id=room_id).delete()
-        
-        # Delete the room
-        room = db.session.query(Room).filter_by(id=room_id).first()
-        if room:
-            db.session.delete(room)
-            db.session.commit()
-            return jsonify({'success': True})
-        else:
-            return jsonify({'success': False, 'message': 'Room not found'}), 404
-            
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f"Error deleting room: {str(e)}")
-        return jsonify({'success': False, 'message': 'Error deleting room'}), 500
-
-@app.route('/users', methods=['GET'])
-def get_users():
-    try:
-        # Check if user is logged in
-        if 'user_id' not in session:
-            logger.warning("User not logged in when accessing /users endpoint")
-            return jsonify({
-                'success': False,
-                'error': 'Please login first'
-            }), 401
-
-        logger.debug("Fetching users from database...")
-        logger.debug(f"Current session: {dict(session)}")  # Log session contents
-        
-        try:
-            users = User.query.order_by(User.username).all()
-            logger.debug(f"Found {len(users)} users")
-            
-            user_list = [user.to_dict() for user in users]
-            logger.debug(f"User list: {user_list}")
-            
-            return jsonify({
-                'success': True,
-                'users': user_list
-            })
-        except Exception as db_error:
-            logger.error(f"Database error while fetching users: {str(db_error)}")
-            return jsonify({
-                'success': False,
-                'error': 'Database error while fetching users'
-            }), 500
-            
-    except Exception as e:
-        logger.error(f"Error in get_users endpoint: {str(e)}")
         return jsonify({
             'success': False,
-            'error': 'Server error'
+            'message': 'Invalid room ID format'
+        }), 400
+    except Exception as e:
+        logger.error(f"Error toggling favorite room: {str(e)}")
+        logger.exception("Full traceback:")
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'message': 'An error occurred while updating favorites'
         }), 500
 
-@app.route('/get-private-messages', methods=['GET'])
-def get_private_messages():
-    if 'username' not in session:
-        return jsonify({'success': False, 'message': 'Not authenticated'})
-    
-    current_user = session['username']
-    chat_with = request.args.get('username')
-    last_message_id = request.args.get('last_message_id', type=int, default=0)
-    
-    if not chat_with:
-        return jsonify({'success': False, 'message': 'Target username is required'})
-    
+@app.route('/favorite-rooms')
+@login_required
+def get_favorite_rooms():
     try:
-        # Use SQLAlchemy's connection pool instead of creating new connections
-        result = db.session.execute(
-            text("""
-                SELECT id, sender_username, receiver_username, content, created_at
-                FROM private_messages WITH (NOLOCK)
-                WHERE ((sender_username = :user1 AND receiver_username = :user2)
-                OR (sender_username = :user2 AND receiver_username = :user1))
-                AND id > :last_id
-                ORDER BY created_at ASC
-            """),
-            {
-                "user1": current_user,
-                "user2": chat_with,
-                "last_id": last_message_id
-            }
-        ).fetchall()
+        logger.debug(f"Fetching favorite rooms for user {session.get('user_id')}")
+        favorites = FavoriteRoom.query.filter_by(user_id=session['user_id']).all()
+        favorite_rooms = []
         
-        messages = [{
-            'id': row[0],
-            'sender': row[1],
-            'receiver': row[2],
-            'content': row[3],
-            'timestamp': row[4].isoformat(),
-            'isOutgoing': row[1] == current_user
-        } for row in result]
-        
-        last_id = max([msg['id'] for msg in messages]) if messages else last_message_id
-        
+        logger.debug(f"Found {len(favorites)} favorite rooms")
+        for fav in favorites:
+            logger.debug(f"Processing favorite room {fav.room_id}")
+            room = Room.query.get(fav.room_id)
+            if room:
+                favorite_rooms.append({
+                    'room_id': room.id,
+                    'room_name': room.name,
+                    'room': {
+                        'is_private': room.is_private
+                    }
+                })
+            else:
+                logger.warning(f"Found orphaned favorite for non-existent room {fav.room_id}")
+                
+        logger.info(f"Successfully retrieved {len(favorite_rooms)} favorite rooms for user {session['user_id']}")
         return jsonify({
             'success': True,
-            'messages': messages,
-            'last_message_id': last_id
+            'favorites': favorite_rooms
         })
-        
     except Exception as e:
-        logger.error(f"Error getting private messages: {str(e)}")
-        return jsonify({'success': False, 'message': 'Server error'})
+        logger.error(f"Error getting favorite rooms: {str(e)}")
+        logger.exception("Full traceback:")
+        return jsonify({
+            'success': False,
+            'message': 'Error retrieving favorites'
+        }), 500
 
-@app.route('/send-private-message', methods=['POST'])
-def send_private_message():
-    if 'username' not in session:
-        return jsonify({'success': False, 'message': 'Not authenticated'})
-    
-    data = request.get_json()
-    sender = session['username']
-    target_username = data.get('target_username')
-    message = data.get('message')
-    
-    if not target_username or not message:
-        return jsonify({'success': False, 'message': 'Missing required fields'})
-    
+@socketio.on('connect')
+def handle_connect():
     try:
-        # Use a single query to check user and insert message
-        result = db.session.execute(
-            text("""
-                IF EXISTS (SELECT 1 FROM users WHERE username = :target_username)
-                BEGIN
-                    INSERT INTO private_messages (sender_username, receiver_username, content)
-                    OUTPUT INSERTED.id, INSERTED.created_at
-                    VALUES (:sender, :target_username, :content)
-                END
-            """),
-            {
-                "sender": sender,
-                "target_username": target_username,
-                "content": message
-            }
-        ).fetchone()
-        
-        if not result:
-            return jsonify({'success': False, 'message': 'User not found'})
-        
-        db.session.commit()
-        
-        return jsonify({
-            'success': True,
-            'message_id': result[0],
-            'timestamp': result[1].isoformat()
+        logger.debug("=== Starting handle_connect ===")
+        username = session.get('username')
+        if not username:
+            logger.warning("No username in session during connect")
+            return False
+            
+        logger.debug(f"User {username} connected")
+        join_room(username)  # Join a room named after the username
+        emit('connection_established', {
+            'username': username,
+            'status': 'connected'
         })
+        return True
         
     except Exception as e:
-        logger.error(f"Error sending private message: {str(e)}")
-        db.session.rollback()
-        return jsonify({'success': False, 'message': 'Server error'})
+        logger.error(f"Error in handle_connect: {str(e)}")
+        logger.exception("Full traceback:")
+        return False
 
-@app.route('/refresh-media-url/<path:filename>')
-def refresh_media_url(filename):
-    if 'user_id' not in session:
-        return jsonify({'success': False, 'message': 'Please login first'})
-        
+@socketio.on('disconnect')
+def handle_disconnect():
     try:
-        sas_token = generate_sas_token(filename)
-        blob_client = container_client.get_blob_client(filename)
-        return jsonify({
-            'success': True,
-            'media_url': f"{blob_client.url}?{sas_token}"
-        })
+        logger.debug("=== Starting handle_disconnect ===")
+        username = session.get('username')
+        if username:
+            logger.debug(f"User {username} disconnected")
+            leave_room(username)
+            emit('user_disconnected', {'username': username}, broadcast=True)
     except Exception as e:
-        logger.error(f"Error refreshing media URL: {str(e)}")
-        return jsonify({'success': False, 'message': 'Error refreshing media URL'})
+        logger.error(f"Error in handle_disconnect: {str(e)}")
+        logger.exception("Full traceback:")
+
+@app.route('/uploads/<path:filename>')
+def serve_file(filename):
+    """Serve uploaded files."""
+    try:
+        return send_from_directory(
+            app.config['UPLOAD_FOLDER'],
+            filename,
+            as_attachment=False
+        )
+    except Exception as e:
+        logger.error(f"Error serving file {filename}: {str(e)}")
+        return "File not found", 404
+
+# Initialize blob storage
+def initialize_blob_storage():
+    try:
+        global BLOB_STORAGE_ENABLED, container_client
+        BLOB_STORAGE_ENABLED = False
+        container_client = None
+        
+        # Check if Azure storage connection string is available
+        storage_connection_string = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
+        if storage_connection_string:
+            # Initialize blob service client
+            blob_service_client = BlobServiceClient.from_connection_string(storage_connection_string)
+            container_client = blob_service_client.get_container_client(container_name)
+            BLOB_STORAGE_ENABLED = True
+            logger.info("Azure Blob Storage initialized successfully")
+            return True
+        else:
+            logger.warning("Azure Blob Storage connection string not found. Using local storage only.")
+            return True
+    except Exception as e:
+        logger.error(f"Error initializing blob storage: {str(e)}")
+        return True  # Return True to allow the app to run with local storage only
+
+def initialize_database():
+    try:
+        logger.info("Initializing database...")
+        with app.app_context():
+            # Get database engine
+            engine = db.engine
+            
+            # Create tables if they don't exist
+            with engine.begin() as connection:
+                # Check if tables exist
+                tables_exist = connection.execute(text("""
+                    SELECT COUNT(*) 
+                    FROM INFORMATION_SCHEMA.TABLES 
+                    WHERE TABLE_NAME IN ('users', 'messages')
+                """)).scalar()
+                
+                if not tables_exist:
+                    logger.info("Creating database tables...")
+                    # Create tables with explicit schema
+                    connection.execute(text("""
+                        IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'users') AND type in (N'U'))
+                        CREATE TABLE users (
+                            id INTEGER IDENTITY(1,1) PRIMARY KEY,
+                            username NVARCHAR(80) UNIQUE NOT NULL,
+                            password_hash NVARCHAR(256) NOT NULL,
+                            created_at DATETIME DEFAULT GETDATE()
+                        );
+                        
+                        IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'messages') AND type in (N'U'))
+                        CREATE TABLE messages (
+                            id INTEGER IDENTITY(1,1) PRIMARY KEY,
+                            sender_username NVARCHAR(80) NOT NULL,
+                            receiver_username NVARCHAR(80) NOT NULL,
+                            content NTEXT,
+                            created_at DATETIME DEFAULT GETDATE(),
+                            has_media BIT DEFAULT 0,
+                            media_type NVARCHAR(50),
+                            media_url NVARCHAR(500),
+                            media_filename NVARCHAR(255),
+                            FOREIGN KEY (sender_username) REFERENCES users(username),
+                            FOREIGN KEY (receiver_username) REFERENCES users(username)
+                        );
+                    """))
+                    
+                    # Create admin user if it doesn't exist
+                    admin_exists = connection.execute(text("SELECT COUNT(*) FROM users WHERE username = 'admin'")).scalar()
+                    if not admin_exists:
+                        connection.execute(
+                            text("INSERT INTO users (username, password_hash, created_at) VALUES (:username, :password_hash, GETDATE())"),
+                            {"username": "admin", "password_hash": generate_password_hash('admin')}
+                        )
+                        logger.info("Admin user created successfully")
+                    
+                    logger.info("Database tables created successfully")
+                else:
+                    logger.info("Database tables already exist")
+            
+    except Exception as e:
+        logger.error(f"Error initializing database: {str(e)}")
+        raise
+
+# Add this route near the top of your routes
+@app.route('/static/<path:filename>')
+def serve_static(filename):
+    return send_from_directory('static', filename)
 
 if __name__ == '__main__':
     try:
@@ -964,9 +629,13 @@ if __name__ == '__main__':
         print("Network: http://192.168.1.78:5000")
         print("======================\n")
         
-        # Disable debug mode for network access
-        app.config['DEBUG'] = False
-        app.run(host='0.0.0.0', port=5000, threaded=True)
+        # Initialize database
+        initialize_database()
+        
+        # Initialize blob storage
+        initialize_blob_storage()
+            
+        socketio.run(app, host='0.0.0.0', port=5000, debug=True)
     except Exception as e:
         print(f"Error starting server: {e}")
         raise 

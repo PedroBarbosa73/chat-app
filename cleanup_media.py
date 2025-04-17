@@ -1,4 +1,4 @@
-from app import db, Message, container_client
+from app import app, db, Message, container_client
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -39,8 +39,9 @@ def cleanup_media_messages():
 
 if __name__ == "__main__":
     print("Starting media messages cleanup...")
-    try:
-        cleaned = cleanup_media_messages()
-        print(f"Successfully cleaned up {cleaned} messages with missing media")
-    except Exception as e:
-        print(f"Error during cleanup: {str(e)}") 
+    with app.app_context():
+        try:
+            cleaned = cleanup_media_messages()
+            print(f"Successfully cleaned up {cleaned} messages with missing media")
+        except Exception as e:
+            print(f"Error during cleanup: {str(e)}") 
