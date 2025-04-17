@@ -627,4 +627,5 @@ def serve_static(filename):
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8181))
-    socketio.run(app, host='0.0.0.0', port=port) 
+    app.logger.info(f"Starting application on port {port}")
+    socketio.run(app, host='0.0.0.0', port=port, debug=False) 
