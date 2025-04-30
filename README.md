@@ -1,6 +1,60 @@
-# Message Exchange App
+# Chat Room Application
 
-A simple web application that allows you to exchange messages with friends through unique URLs.
+A modern, feature-rich chat application that allows users to create and participate in both public and private chat rooms. Built with Flask and Azure cloud services.
+
+## Features
+
+- **User Authentication**
+  - Secure user registration and login
+  - Password hashing for user security
+  - Persistent session management
+  - Remember me functionality
+
+- **Chat Rooms**
+  - Create public or private rooms
+  - Password protection for private rooms
+  - Real-time message updates
+  - Room access management
+  - Enhanced favorites system with dropdown navigation
+  - Quick room switching via favorites menu
+
+- **Messaging**
+  - Real-time message display
+  - Message pagination with infinite scroll
+  - Auto-scroll to new messages
+  - Username display with messages
+  - Timestamps for all messages
+  - Media support (images and videos)
+  - File upload progress indicators
+  - Image lightbox for fullscreen viewing
+
+- **Media Features**
+  - Support for image uploads (JPEG, PNG, GIF)
+  - Video file support
+  - Secure file storage using Azure Blob Storage
+  - Image preview in chat
+  - Lightbox for fullscreen image viewing
+  - Upload progress indicators
+  - Secure URL generation for media access
+
+- **User Interface**
+  - Modern, responsive design with Tailwind CSS
+  - Three-panel layout (Favorites, Main Chat, Room Creation)
+  - Active room highlighting
+  - Room status indicators (Public/Private)
+  - Clean and intuitive navigation
+  - Favorites dropdown for quick room access
+  - Loading indicators for all operations
+  - Improved mobile responsiveness
+
+- **Security**
+  - Secure password hashing
+  - Protected API endpoints
+  - Environment-based configuration
+  - SQL injection prevention
+  - XSS protection
+  - Secure media file handling
+  - Azure Blob Storage security
 
 ## Local Development Setup
 
@@ -19,7 +73,7 @@ pip install -r requirements.txt
 python app.py
 ```
 
-4. Open your web browser and go to `http://localhost:5000`
+4. Open your web browser and go to `http://localhost:8000`
 
 ## Azure Deployment
 
@@ -28,41 +82,12 @@ python app.py
 - Azure CLI installed
 - Git installed
 - ODBC Driver 18 for SQL Server installed (for local development)
+- Azure Storage Account for media files
 
-### Deployment Steps
-
-1. Create a new Azure App Service:
-```bash
-az group create --name myResourceGroup --location eastus
-az appservice plan create --name myAppServicePlan --resource-group myResourceGroup --sku B1 --is-linux
-az webapp create --resource-group myResourceGroup --plan myAppServicePlan --name your-app-name --runtime "PYTHON|3.9"
-```
-
-2. Create an Azure SQL Database:
-```bash
-# Create SQL Server
-az sql server create --name your-server-name --resource-group myResourceGroup --location eastus --admin-user your-admin --admin-password your-password
-
-# Create SQL Database
-az sql db create --resource-group myResourceGroup --server your-server-name --name your-database-name --edition Basic --capacity 5
-```
-
-3. Configure environment variables in Azure:
-   - Use Azure Portal or Azure CLI to set application settings
-   - NEVER store credentials in code or version control
-   - Use Azure Key Vault for production environments
-
-4. Configure the firewall to allow Azure services:
-```bash
-az sql server firewall-rule create --resource-group myResourceGroup --server your-server-name --name AllowAzureServices --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0
-```
-
-5. Deploy your application:
-```bash
-git add .
-git commit -m "Ready for Azure deployment"
-git push azure main
-```
+### Required Azure Services
+1. Azure App Service (for hosting)
+2. Azure SQL Database (for data storage)
+3. Azure Blob Storage (for media files)
 
 ## Security Best Practices
 
@@ -89,20 +114,26 @@ git push azure main
    - Enable Azure Security Center
    - Set up monitoring and alerts
 
-## Features
+## Security Notes
 
-- Simple and clean interface
-- Secure message sharing through unique URLs
-- No registration required
-- Cloud deployment ready
-- Azure SQL Database support
+1. Never commit your `.env` file to version control
+2. Keep your secret key private and secure
+3. Use environment variables for all sensitive information
+4. Regularly rotate your database credentials and secret keys
+5. Use strong, unique passwords for your database
+6. Secure your Azure Storage access keys
 
-## Note
+## Production Recommendations
 
-For production use, make sure to:
 - Use strong secret keys
 - Configure proper database settings
 - Set up proper security measures
 - Monitor application performance
 - Set up proper backup procedures
-- Use managed identities for database access (recommended for production) 
+- Use managed identities for database access
+- Enable SSL/TLS encryption
+- Implement rate limiting
+- Set up logging and monitoring
+- Configure automatic scaling
+- Regular security audits
+- Monitor storage usage 
