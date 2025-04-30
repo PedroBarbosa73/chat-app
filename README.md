@@ -9,12 +9,10 @@ A simple web application that allows you to exchange messages with friends throu
 pip install -r requirements.txt
 ```
 
-2. Create a `.env` file with the following content:
-```
-SECRET_KEY=your-secret-key-here
-AZURE_SQL_CONNECTIONSTRING=mssql+pyodbc://username:password@server.database.windows.net/database?driver=ODBC+Driver+18+for+SQL+Server
-PORT=5000
-```
+2. Create a `.env` file:
+   - Copy `.env.example` to `.env`
+   - Fill in your environment variables
+   - NEVER commit the `.env` file to version control
 
 3. Run the application:
 ```bash
@@ -49,37 +47,47 @@ az sql server create --name your-server-name --resource-group myResourceGroup --
 az sql db create --resource-group myResourceGroup --server your-server-name --name your-database-name --edition Basic --capacity 5
 ```
 
-3. Get the connection string:
-```bash
-# Get the connection string
-az sql db show-connection-string --client sqlcmd --server your-server-name --name your-database-name
-```
+3. Configure environment variables in Azure:
+   - Use Azure Portal or Azure CLI to set application settings
+   - NEVER store credentials in code or version control
+   - Use Azure Key Vault for production environments
 
-4. Set the environment variables in Azure:
-```bash
-az webapp config appsettings set --resource-group myResourceGroup --name your-app-name --settings \
-    SECRET_KEY="your-secret-key" \
-    AZURE_SQL_CONNECTIONSTRING="your-connection-string"
-```
-
-5. Configure the firewall to allow Azure services:
+4. Configure the firewall to allow Azure services:
 ```bash
 az sql server firewall-rule create --resource-group myResourceGroup --server your-server-name --name AllowAzureServices --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0
 ```
 
-6. Deploy your application:
+5. Deploy your application:
 ```bash
 git add .
 git commit -m "Ready for Azure deployment"
 git push azure main
 ```
 
-## How to Use
+## Security Best Practices
 
-1. Type your message in the text area
-2. Click "Create Message Link"
-3. Share the generated URL with your friend
-4. Your friend can view the message by opening the URL
+1. **Environment Variables**
+   - Use environment variables for all sensitive information
+   - Never commit `.env` files to version control
+   - Use different credentials for development and production
+
+2. **Database Security**
+   - Use managed identities for database access in production
+   - Regularly rotate database credentials
+   - Enable Azure SQL Database threat detection
+   - Use SSL/TLS for all database connections
+
+3. **Application Security**
+   - Use strong, randomly generated secret keys
+   - Enable HTTPS in production
+   - Implement proper input validation
+   - Use parameterized queries for database operations
+
+4. **Azure Security**
+   - Use Azure Key Vault for secrets management
+   - Implement proper RBAC (Role-Based Access Control)
+   - Enable Azure Security Center
+   - Set up monitoring and alerts
 
 ## Features
 
